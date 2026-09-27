@@ -1,0 +1,6 @@
+{
+  "name": "Shadow Clash",
+  "description": "Fast-paced vertical 2D action arena game with heroes, abilities, waves, and upgrades.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
