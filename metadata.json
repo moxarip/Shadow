@@ -1,6 +1,6 @@
 {
-  "name": "Shadow Clash",
-  "description": "Fast-paced vertical 2D action arena game with heroes, abilities, waves, and upgrades.",
+  "name": "Shadow Warriors",
+  "description": "Fast 2D side-scrolling shadow warrior action game with 10 original fighters, combo combat, weapons, stages, and boss fights.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -1,234 +1,139 @@
 package com.example.game.engine
 
 import com.example.audio.GameAudioManager
-import com.example.game.model.ArenaDef
-import com.example.game.model.ArenaId
-import com.example.game.model.ArenaRegistry
-import com.example.game.model.DamageNumber
-import com.example.game.model.ElementType
-import com.example.game.model.EnemyEntity
+import com.example.game.model.AIBehaviorState
+import com.example.game.model.AnimState
+import com.example.game.model.CharacterDef
+import com.example.game.model.CharacterProgress
 import com.example.game.model.EnemyType
-import com.example.game.model.FloatingCoin
-import com.example.game.model.GameMode
-import com.example.game.model.GroundZone
-import com.example.game.model.GroundZoneType
-import com.example.game.model.HeroDef
-import com.example.game.model.HeroProgress
-import com.example.game.model.Particle
-import com.example.game.model.PlayerState
-import com.example.game.model.Projectile
+import com.example.game.model.EnemyWarrior
+import com.example.game.model.PlayerWarrior
+import com.example.game.model.PooledCoin
+import com.example.game.model.PooledDamageNumber
+import com.example.game.model.PooledParticle
+import com.example.game.model.PooledProjectile
+import com.example.game.model.SkinDef
 import com.example.game.model.Vector2
+import com.example.game.model.WeaponDef
+import com.example.game.model.WeaponType
+import com.example.game.model.WorldDef
 import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.math.sqrt
 import kotlin.random.Random
 
+data class StagePlatform(
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float = 16f
+)
+
 class GameEngine(
-    val heroDef: HeroDef,
-    val heroProgress: HeroProgress,
-    val arenaDef: ArenaDef,
-    val gameMode: GameMode,
+    val characterDef: CharacterDef,
+    val characterProgress: CharacterProgress,
+    val weaponDef: WeaponDef,
+    val worldDef: WorldDef,
+    val stageNumber: Int, // 1..4 (4 is Boss Stage)
     private val audioManager: GameAudioManager
 ) {
-    val arenaWidth = 600f
-    val arenaHeight = 900f
-    private val minX = 40f
-    private val maxX = 560f
-    private val minY = 60f
-    private val maxY = 840f
+    // Stage Dimensions
+    val stageLength: Float = if (stageNumber == 4) 2200f else 2800f
+    val stageHeight: Float = 900f
+    val groundY: Float = 530f
+    val viewportWidth: Float = 600f
+    val viewportHeight: Float = 900f
 
-    val player = PlayerState().apply {
-        resetForBattle(heroDef, heroProgress, Vector2(300f, 650f))
-    }
+    // Camera
+    var cameraX: Float = 0f
+    var screenShakeIntensity: Float = 0f
+    var screenShakeOffsetX: Float = 0f
+    var screenShakeOffsetY: Float = 0f
 
-    val enemies = mutableListOf<EnemyEntity>()
-    val projectiles = mutableListOf<Projectile>()
-    val particles = mutableListOf<Particle>()
-    val damageNumbers = mutableListOf<DamageNumber>()
-    val floatingCoins = mutableListOf<FloatingCoin>()
-    val groundZones = mutableListOf<GroundZone>()
+    // Game State
+    var isPaused: Boolean = false
+    var isVictory: Boolean = false
+    var isGameOver: Boolean = false
+    var runTimeSeconds: Float = 0f
+    var coinsCollected: Int = 0
+    var xpEarned: Int = 0
+    var enemiesKilled: Int = 0
+    var bossDefeated: Boolean = false
 
-    var currentWave = 1
-    val maxStoryWaves = 5
-    var waveState = WaveState.IN_PROGRESS
-    var waveBannerTimer = 0f
-    var waveBannerText = "WAVE 1"
+    // Platforms along the stage
+    val platforms = listOf(
+        StagePlatform(360f, 430f, 160f),
+        StagePlatform(720f, 380f, 180f),
+        StagePlatform(1150f, 420f, 190f),
+        StagePlatform(1520f, 360f, 210f),
+        StagePlatform(1980f, 410f, 180f)
+    )
 
-    var isGameOver = false
-    var isVictory = false
-    var isPaused = false
+    // Player
+    val playerSkin: SkinDef = characterDef.skins.getOrElse(characterProgress.selectedSkinIndex) { characterDef.skins.first() }
+    val player = PlayerWarrior(
+        characterDef = characterDef,
+        skinDef = playerSkin,
+        weaponDef = weaponDef,
+        maxHp = characterProgress.getHp(characterDef),
+        attackStat = characterProgress.getAttack(characterDef) + weaponDef.baseDamage * 0.4f,
+        defenseStat = characterProgress.getDefense(characterDef),
+        speedStat = characterProgress.getSpeed(characterDef)
+    )
 
-    var runCoinsEarned = 0
-    var runXpEarned = 0
-    var runEnemiesDefeated = 0
-    var runAbilitiesUsed = 0
-    var runTimeSeconds = 0f
-    var isBossActive = false
-    var bossReference: EnemyEntity? = null
+    // Fixed Object Pools (Zero GC in game loop)
+    val enemies = Array(8) { EnemyWarrior() }
+    val projectiles = Array(24) { PooledProjectile() }
+    val particles = Array(32) { PooledParticle() }
+    val damageNumbers = Array(10) { PooledDamageNumber() }
+    val coins = Array(12) { PooledCoin() }
 
-    var screenShakeIntensity = 0f
-    var screenShakeOffsetX = 0f
-    var screenShakeOffsetY = 0f
+    // Boss Tracking
+    var activeBoss: EnemyWarrior? = null
+    var isBossFightTriggered: Boolean = false
 
-    private var nextEntityId = 1000L
-    private var spawnTimer = 0f
-
-    enum class WaveState {
-        WAVE_INTRO,
-        IN_PROGRESS,
-        WAVE_CLEARED
-    }
+    // Spawner checkpoints along x
+    private val spawnTriggerXs = floatArrayOf(280f, 650f, 1050f, 1480f, 1900f)
+    private val spawnTriggered = BooleanArray(spawnTriggerXs.size) { false }
 
     init {
-        startWave(1)
+        resetGame()
     }
 
-    fun startWave(wave: Int) {
-        currentWave = wave
-        waveState = WaveState.WAVE_INTRO
-        waveBannerTimer = 2.0f
-        waveBannerText = when {
-            gameMode == GameMode.TRAINING -> "TRAINING GROUNDS"
-            gameMode == GameMode.ENDLESS -> "WAVE $wave"
-            wave == maxStoryWaves -> "FINAL WAVE - BOSS"
-            else -> "WAVE $wave / $maxStoryWaves"
-        }
+    fun resetGame() {
+        player.reset(spawnX = 80f, spawnY = groundY)
+        cameraX = 0f
+        isPaused = false
+        isVictory = false
+        isGameOver = false
+        runTimeSeconds = 0f
+        coinsCollected = 0
+        xpEarned = 0
+        enemiesKilled = 0
+        bossDefeated = false
+        isBossFightTriggered = false
+        activeBoss = null
 
-        if (wave == maxStoryWaves && gameMode == GameMode.STORY) {
-            audioManager.playSound(GameAudioManager.SoundType.WARNING)
-        }
+        for (i in spawnTriggered.indices) spawnTriggered[i] = false
+        for (e in enemies) e.active = false
+        for (p in projectiles) p.active = false
+        for (pt in particles) pt.active = false
+        for (d in damageNumbers) d.active = false
+        for (c in coins) c.active = false
 
-        spawnWaveEnemies(wave)
-    }
-
-    private fun spawnWaveEnemies(wave: Int) {
-        if (gameMode == GameMode.TRAINING) {
-            // Spawn 3 training golems
-            val positions = listOf(Vector2(200f, 350f), Vector2(300f, 300f), Vector2(400f, 350f))
-            positions.forEach { p ->
-                enemies.add(
-                    EnemyEntity(
-                        id = nextEntityId++,
-                        type = EnemyType.TANK,
-                        pos = p,
-                        health = 9999f,
-                        maxHealth = 9999f,
-                        damage = 0f,
-                        baseSpeed = 0f,
-                        radius = 28f
-                    )
-                )
-            }
-            return
-        }
-
-        if (gameMode == GameMode.STORY && wave == maxStoryWaves) {
-            // Boss spawn!
-            val bossType = when (arenaDef.id) {
-                ArenaId.DARK_FOREST -> EnemyType.BOSS_BEHEMOTH
-                ArenaId.ANCIENT_TEMPLE -> EnemyType.BOSS_PHARAOH
-                ArenaId.CYBER_ARENA -> EnemyType.BOSS_CYBER
-            }
-            val boss = EnemyEntity(
-                id = nextEntityId++,
-                type = bossType,
-                pos = Vector2(300f, 250f),
-                health = 2200f + (heroProgress.level - 1) * 300f,
-                maxHealth = 2200f + (heroProgress.level - 1) * 300f,
-                damage = 45f,
-                baseSpeed = 110f,
-                radius = 48f
-            )
-            enemies.add(boss)
-            bossReference = boss
-            isBossActive = true
-            return
-        }
-
-        // Standard or Endless wave composition
-        val baseCount = if (gameMode == GameMode.ENDLESS) 4 + wave * 2 else 3 + wave * 2
-        val types = when (wave) {
-            1 -> listOf(EnemyType.BASIC)
-            2 -> listOf(EnemyType.BASIC, EnemyType.FAST)
-            3 -> listOf(EnemyType.BASIC, EnemyType.FAST, EnemyType.RANGED, EnemyType.TANK)
-            4 -> listOf(EnemyType.FAST, EnemyType.RANGED, EnemyType.ELITE, EnemyType.TANK)
-            else -> listOf(EnemyType.BASIC, EnemyType.FAST, EnemyType.TANK, EnemyType.RANGED, EnemyType.ELITE)
-        }
-
-        for (i in 0 until baseCount) {
-            val type = types.random()
-            val spawnPos = getRandomSpawnPosition()
-            val hpMultiplier = 1f + (wave - 1) * 0.15f
-            val baseHp = when (type) {
-                EnemyType.BASIC -> 140f
-                EnemyType.FAST -> 90f
-                EnemyType.TANK -> 320f
-                EnemyType.RANGED -> 110f
-                EnemyType.ELITE -> 420f
-                else -> 150f
-            } * hpMultiplier
-
-            val dmg = when (type) {
-                EnemyType.BASIC -> 18f
-                EnemyType.FAST -> 14f
-                EnemyType.TANK -> 32f
-                EnemyType.RANGED -> 16f
-                EnemyType.ELITE -> 35f
-                else -> 20f
-            } * (1f + (wave - 1) * 0.10f)
-
-            val spd = when (type) {
-                EnemyType.BASIC -> 120f
-                EnemyType.FAST -> 190f
-                EnemyType.TANK -> 80f
-                EnemyType.RANGED -> 100f
-                EnemyType.ELITE -> 135f
-                else -> 110f
-            }
-
-            val rad = when (type) {
-                EnemyType.BASIC -> 20f
-                EnemyType.FAST -> 16f
-                EnemyType.TANK -> 30f
-                EnemyType.RANGED -> 18f
-                EnemyType.ELITE -> 28f
-                else -> 20f
-            }
-
-            enemies.add(
-                EnemyEntity(
-                    id = nextEntityId++,
-                    type = type,
-                    pos = spawnPos,
-                    health = baseHp,
-                    maxHealth = baseHp,
-                    damage = dmg,
-                    baseSpeed = spd,
-                    radius = rad
-                )
-            )
+        // Initial initial enemies
+        spawnEnemyAt(380f, EnemyType.BASIC_FIGHTER)
+        if (stageNumber > 1) {
+            spawnEnemyAt(540f, EnemyType.FAST_FIGHTER)
         }
     }
 
-    private fun getRandomSpawnPosition(): Vector2 {
-        val side = Random.nextInt(4)
-        return when (side) {
-            0 -> Vector2(Random.nextFloat() * (maxX - minX) + minX, minY + 30f)
-            1 -> Vector2(Random.nextFloat() * (maxX - minX) + minX, minY + 120f)
-            2 -> Vector2(minX + 30f, Random.nextFloat() * 400f + 100f)
-            else -> Vector2(maxX - 30f, Random.nextFloat() * 400f + 100f)
-        }
-    }
-
-    fun update(dt: Float, joystick: Vector2, isAttackHeld: Boolean) {
-        if (isGameOver || isVictory || isPaused) return
-
+    fun update(dt: Float, moveX: Float, jumpPressed: Boolean, attackHeld: Boolean) {
+        if (isPaused || isGameOver || isVictory) return
         runTimeSeconds += dt
 
-        // Screen shake decay
+        // 1. Screen Shake Decay
         if (screenShakeIntensity > 0f) {
             screenShakeOffsetX = (Random.nextFloat() * 2f - 1f) * screenShakeIntensity
             screenShakeOffsetY = (Random.nextFloat() * 2f - 1f) * screenShakeIntensity
@@ -238,1015 +143,704 @@ class GameEngine(
             screenShakeOffsetY = 0f
         }
 
-        // Wave Banner timer
-        if (waveBannerTimer > 0f) {
-            waveBannerTimer -= dt
-            if (waveBannerTimer <= 0f && waveState == WaveState.WAVE_INTRO) {
-                waveState = WaveState.IN_PROGRESS
+        // 2. Update Player
+        updatePlayer(dt, moveX, jumpPressed, attackHeld)
+
+        // 3. Update Camera
+        val targetCamX = (player.pos.x - 200f).coerceIn(0f, stageLength - viewportWidth)
+        cameraX += (targetCamX - cameraX) * (dt * 6.5f).coerceAtMost(1f)
+
+        // 4. Check Spawner Checkpoints
+        checkSpawners()
+
+        // 5. Update Enemies
+        updateEnemies(dt)
+
+        // 6. Update Projectiles
+        updateProjectiles(dt)
+
+        // 7. Update Particles & Numbers & Coins
+        for (i in particles.indices) particles[i].update(dt)
+        for (i in damageNumbers.indices) damageNumbers[i].update(dt)
+        for (i in coins.indices) {
+            val c = coins[i]
+            if (c.active) {
+                c.update(dt, groundY)
+                // Collect coin on player overlap
+                val dist = player.pos.distanceTo(Vector2(c.x, c.y))
+                if (dist < player.radius + 20f) {
+                    c.active = false
+                    coinsCollected += c.value
+                    xpEarned += (c.value * 0.8f).toInt()
+                    audioManager.playSound(GameAudioManager.SoundType.COIN)
+                    spawnParticle(c.x, c.y, 0f, -40f, 3.5f, 0xFFFFD700, 0.25f)
+                }
             }
         }
 
-        // Update Player
-        updatePlayer(dt, joystick, isAttackHeld)
-
-        // Update Projectiles
-        updateProjectiles(dt)
-
-        // Update Ground Zones
-        updateGroundZones(dt)
-
-        // Update Enemies
-        updateEnemies(dt)
-
-        // Update Floating Coins
-        updateCoins(dt)
-
-        // Update Particles
-        updateParticles(dt)
-
-        // Update Damage Numbers
-        updateDamageNumbers(dt)
-
-        // Check Wave completion
-        checkWaveProgression(dt)
+        // 8. Check Victory Condition
+        if (stageNumber == 4) {
+            if (bossDefeated && !isVictory) {
+                isVictory = true
+                player.animState = AnimState.VICTORY
+                audioManager.playSound(GameAudioManager.SoundType.VICTORY)
+                audioManager.vibrate(80, 240)
+            }
+        } else {
+            if (player.pos.x >= stageLength - 90f && !isVictory) {
+                isVictory = true
+                player.animState = AnimState.VICTORY
+                audioManager.playSound(GameAudioManager.SoundType.VICTORY)
+                audioManager.vibrate(80, 240)
+            }
+        }
     }
 
-    private fun updatePlayer(dt: Float, joystick: Vector2, isAttackHeld: Boolean) {
-        // Cooldowns
+    private fun updatePlayer(dt: Float, moveX: Float, jumpPressed: Boolean, attackHeld: Boolean) {
+        // Cooldown timers
         if (player.dashCooldownTimer > 0f) player.dashCooldownTimer -= dt
         if (player.abilityCooldownTimer > 0f) player.abilityCooldownTimer -= dt
         if (player.attackCooldownTimer > 0f) player.attackCooldownTimer -= dt
         if (player.invulnerableTimer > 0f) player.invulnerableTimer -= dt
-        if (player.damageFlashTimer > 0f) player.damageFlashTimer -= dt
-        if (player.attackSwingTimer > 0f) player.attackSwingTimer -= dt
+        if (player.hitFlashTimer > 0f) player.hitFlashTimer -= dt
+        if (player.knockbackTimer > 0f) player.knockbackTimer -= dt
 
-        // Combo timeout
+        // Combo timeout reset
         if (player.comboTimer > 0f) {
             player.comboTimer -= dt
             if (player.comboTimer <= 0f) {
-                player.comboCount = 0
+                player.comboStep = 0
+            }
+        }
+        if (player.comboDisplayTimer > 0f) {
+            player.comboDisplayTimer -= dt
+            if (player.comboDisplayTimer <= 0f) {
+                player.comboDisplayCount = 0
             }
         }
 
         // Energy recharge
         player.energy = (player.energy + dt * 15f).coerceAtMost(player.maxEnergy)
 
-        // Movement & Dash
+        // Dashing behavior
         if (player.isDashing) {
-            player.dashDurationTimer -= dt
-            // Emit trail particles
-            particles.add(
-                Particle(
-                    x = player.pos.x + (Random.nextFloat() * 20f - 10f),
-                    y = player.pos.y + (Random.nextFloat() * 20f - 10f),
-                    vx = -player.vel.x * 0.15f,
-                    vy = -player.vel.y * 0.15f,
-                    radius = 8f,
-                    color = heroDef.glowColor,
-                    maxLife = 0.25f
-                )
-            )
-            if (player.dashDurationTimer <= 0f) {
+            player.dashTimer -= dt
+            player.pos.x += player.vel.x * dt
+            spawnParticle(player.pos.x, player.pos.y, -player.vel.x * 0.1f, 0f, 5f, playerSkin.glowColor, 0.18f, true)
+            if (player.dashTimer <= 0f) {
                 player.isDashing = false
             }
+        } else if (player.knockbackTimer > 0f) {
+            // Under knockback
+            player.pos.x += player.vel.x * dt
         } else {
-            val speed = heroProgress.getSpeed(heroDef)
-            if (joystick.length() > 0.1f) {
-                val norm = joystick.normalize()
-                player.vel = norm * speed
-                player.facingAngle = atan2(norm.y, norm.x)
+            // Normal Horizontal Motion
+            if (abs(moveX) > 0.12f) {
+                player.facingRight = moveX > 0f
+                val spd = player.speedStat
+                player.vel.x = if (moveX > 0f) spd else -spd
+                player.pos.x += player.vel.x * dt
             } else {
-                player.vel = Vector2(0f, 0f)
+                player.vel.x = 0f
+            }
+
+            // Jump
+            if (jumpPressed && player.isGrounded) {
+                player.vel.y = -520f
+                player.isGrounded = false
+                audioManager.playSound(GameAudioManager.SoundType.JUMP)
+                spawnParticle(player.pos.x, groundY, 0f, -30f, 4f, 0x88FFFFFF, 0.2f)
             }
         }
 
-        // Integrate velocity
-        player.pos = player.pos + player.vel * dt
-        clampPosition(player.pos, player.radius)
+        // Vertical Gravity and Platforms
+        if (!player.isDashing) {
+            player.vel.y += 1200f * dt
+            player.pos.y += player.vel.y * dt
 
-        // Check Obstacle collision for player
-        resolveObstacleCollision(player.pos, player.radius)
+            // Check platforms from above
+            var landed = false
+            if (player.vel.y >= 0f) {
+                for (plat in platforms) {
+                    if (player.pos.x >= plat.x - 10f && player.pos.x <= plat.x + plat.width + 10f) {
+                        if (player.pos.y >= plat.y && player.pos.y - player.vel.y * dt <= plat.y + 12f) {
+                            player.pos.y = plat.y
+                            player.vel.y = 0f
+                            player.isGrounded = true
+                            landed = true
+                            break
+                        }
+                    }
+                }
+            }
 
-        // Auto Attack if attack button is held and cooldown is ready
-        if (isAttackHeld && player.attackCooldownTimer <= 0f) {
-            triggerBasicAttack()
+            // Ground floor check
+            if (!landed) {
+                if (player.pos.y >= groundY) {
+                    player.pos.y = groundY
+                    player.vel.y = 0f
+                    player.isGrounded = true
+                } else {
+                    player.isGrounded = false
+                }
+            }
+        }
+
+        // Clamp to stage limits
+        player.pos.x = player.pos.x.coerceIn(30f, stageLength - 30f)
+
+        // Auto-attack when button held
+        if (attackHeld && player.attackCooldownTimer <= 0f) {
+            triggerPlayerAttack()
+        }
+
+        // Animation State Selection
+        player.animTimer += dt
+        if (!player.isAlive()) {
+            player.animState = AnimState.DEATH
+        } else if (player.isDashing) {
+            player.animState = AnimState.DASH
+        } else if (player.abilityTimer > 0f) {
+            player.animState = AnimState.ABILITY
+            player.abilityTimer -= dt
+        } else if (player.knockbackTimer > 0f) {
+            player.animState = AnimState.KNOCKBACK
+        } else if (player.attackCooldownTimer > 0f) {
+            player.animState = if (player.comboStep >= 3) AnimState.ATTACK_HEAVY else AnimState.ATTACK_LIGHT
+        } else if (!player.isGrounded) {
+            player.animState = if (player.vel.y < 0f) AnimState.JUMP else AnimState.FALL
+        } else if (abs(player.vel.x) > 10f) {
+            player.animState = AnimState.RUN
+        } else {
+            player.animState = AnimState.IDLE
+        }
+
+        player.pose.compute(player.animState, player.animTimer, player.facingRight)
+    }
+
+    fun requestJump() {
+        if (player.isGrounded && player.isAlive() && !player.isDashing) {
+            player.vel.y = -520f
+            player.isGrounded = false
+            audioManager.playSound(GameAudioManager.SoundType.JUMP)
+            spawnParticle(player.pos.x, player.pos.y, 0f, -40f, 4f, 0x99FFFFFF, 0.2f)
         }
     }
 
-    fun requestDash() {
-        if (player.dashCooldownTimer > 0f || player.isDashing) return
+    fun requestPlayerDash() {
+        if (player.dashCooldownTimer > 0f || player.isDashing || !player.isAlive()) return
 
         player.isDashing = true
-        player.dashDurationTimer = 0.22f
+        player.dashTimer = 0.22f
         player.dashCooldownTimer = player.dashCooldownMax
-        player.invulnerableTimer = 0.35f
+        player.invulnerableTimer = 0.28f
 
-        val dashDir = if (player.vel.length() > 10f) {
-            player.vel.normalize()
-        } else {
-            Vector2(cos(player.facingAngle), sin(player.facingAngle))
-        }
+        val dir = if (player.facingRight) 1f else -1f
+        player.vel.x = dir * (player.speedStat * 3.4f).coerceAtLeast(680f)
+        player.vel.y = 0f
 
-        player.vel = dashDir * (heroProgress.getSpeed(heroDef) * 3.4f)
         audioManager.playSound(GameAudioManager.SoundType.DASH)
-        audioManager.vibrate(30, 150)
-
-        // Dash burst particles
-        for (i in 0 until 12) {
-            val angle = Random.nextFloat() * PI.toFloat() * 2f
-            particles.add(
-                Particle(
-                    x = player.pos.x,
-                    y = player.pos.y,
-                    vx = cos(angle) * 120f,
-                    vy = sin(angle) * 120f,
-                    radius = 5f,
-                    color = heroDef.secondaryColor,
-                    maxLife = 0.35f
-                )
-            )
-        }
+        audioManager.vibrate(30, 160)
     }
 
-    fun triggerBasicAttack() {
-        player.attackCooldownTimer = heroDef.attackCooldownSec
-        player.attackSwingTimer = 0.18f
-        audioManager.playSound(GameAudioManager.SoundType.ATTACK)
+    fun triggerPlayerAttack() {
+        if (!player.isAlive() || player.attackCooldownTimer > 0f) return
 
-        // Check if there is an enemy nearby to auto-target facing angle
-        val nearest = findNearestEnemy(player.pos, 350f)
-        if (nearest != null) {
-            player.facingAngle = player.pos.angleTo(nearest.pos)
+        val speedMod = weaponDef.attackSpeed
+        player.attackCooldownTimer = 1.0f / speedMod
+
+        player.comboStep = (player.comboStep + 1) % 4
+        player.comboTimer = 0.9f
+        player.comboDisplayCount++
+        player.comboDisplayTimer = 1.8f
+
+        val isFinisher = player.comboStep == 3
+        if (isFinisher) {
+            audioManager.playSound(GameAudioManager.SoundType.HEAVY_ATTACK)
+            triggerScreenShake(5f)
+        } else {
+            audioManager.playSound(GameAudioManager.SoundType.ATTACK)
         }
 
-        val damage = heroProgress.getDamage(heroDef)
+        val dir = if (player.facingRight) 1f else -1f
 
-        if (heroDef.isRanged) {
+        if (weaponDef.isRanged) {
             // Spawn Ranged Projectile
-            val dir = Vector2(cos(player.facingAngle), sin(player.facingAngle))
-            val projSpeed = 480f
-            projectiles.add(
-                Projectile(
-                    id = nextEntityId++,
-                    pos = Vector2(player.pos.x + dir.x * 25f, player.pos.y + dir.y * 25f),
-                    vel = dir * projSpeed,
-                    radius = 10f,
-                    damage = damage,
-                    isPlayer = true,
-                    lifeTimer = 1.2f,
-                    maxLife = 1.2f,
-                    color = heroDef.glowColor,
-                    pierces = false,
-                    effectType = heroDef.element
-                )
-            )
+            val projSpeed = if (weaponDef.projectileSpeed > 100f) weaponDef.projectileSpeed else 620f
+            val px = player.pos.x + dir * 30f
+            val py = player.pos.y - 25f
+            val dmg = (player.attackStat * (if (isFinisher) 1.6f else 1.0f))
+            spawnProjectile(px, py, dir * projSpeed, 0f, 5f, weaponDef.color, dmg, isPlayer = true, pierce = isFinisher)
         } else {
-            // Melee Slash Hitbox in front arc
-            val forward = Vector2(cos(player.facingAngle), sin(player.facingAngle))
-            val attackRange = heroDef.attackRange + 15f
+            // Melee Hit Detection Arc
+            val hitRange = weaponDef.range + (if (isFinisher) 25f else 0f)
             var hitAny = false
 
-            enemies.forEach { enemy ->
-                if (enemy.isAlive()) {
-                    val dist = player.pos.distanceTo(enemy.pos)
-                    if (dist <= attackRange + enemy.radius) {
-                        val toEnemy = (enemy.pos - player.pos).normalize()
-                        val dot = forward.x * toEnemy.x + forward.y * toEnemy.y
-                        if (dot > 0.35f) { // roughly 120 degree cone in front
-                            applyDamageToEnemy(enemy, damage, isCritical = (Random.nextFloat() < 0.25f))
-                            // Knockback
-                            enemy.pos = enemy.pos + forward * 28f
-                            hitAny = true
-                        }
+            for (e in enemies) {
+                if (!e.isAlive()) continue
+                val dx = e.pos.x - player.pos.x
+                val dy = e.pos.y - player.pos.y
+
+                // Must be in front of player
+                if ((dir > 0 && dx in 0f..hitRange) || (dir < 0 && dx in -hitRange..0f)) {
+                    if (abs(dy) <= 65f) {
+                        hitAny = true
+                        val isCrit = isFinisher || Random.nextFloat() < 0.22f
+                        val rawDmg = player.attackStat * (if (isFinisher) 1.55f else 1.0f)
+                        val finalDmg = calculateDamage(rawDmg, e.defenseStat, isCrit)
+                        applyDamageToEnemy(e, finalDmg, isCrit)
+
+                        // Knockback
+                        e.vel.x = dir * (if (isFinisher) 280f else 140f)
+                        e.hitFlashTimer = 0.14f
                     }
                 }
             }
 
             if (hitAny) {
-                triggerScreenShake(3f)
                 audioManager.playSound(GameAudioManager.SoundType.HIT)
                 audioManager.vibrate(35, 180)
-            }
-
-            // Spawn Slash arc particles
-            for (i in -3..3) {
-                val arcAngle = player.facingAngle + (i * 0.22f)
-                val dist = attackRange * 0.75f
-                particles.add(
-                    Particle(
-                        x = player.pos.x + cos(arcAngle) * dist,
-                        y = player.pos.y + sin(arcAngle) * dist,
-                        vx = cos(arcAngle) * 80f,
-                        vy = sin(arcAngle) * 80f,
-                        radius = 6f,
-                        color = heroDef.primaryColor,
-                        maxLife = 0.18f,
-                        isSpark = true
-                    )
-                )
+                triggerScreenShake(if (isFinisher) 6f else 3f)
+                spawnSlashEffect(player.pos.x + dir * 35f, player.pos.y - 20f, weaponDef.color)
             }
         }
     }
 
-    fun requestSpecialAbility() {
-        if (player.abilityCooldownTimer > 0f) return
+    fun requestPlayerAbility() {
+        if (player.abilityCooldownTimer > 0f || !player.isAlive()) return
 
-        player.abilityCooldownTimer = player.abilityCooldownMax
-        runAbilitiesUsed++
+        player.abilityCooldownTimer = characterDef.abilityCooldownSec
+        player.abilityTimer = 0.35f
         triggerScreenShake(8f)
-        audioManager.vibrate(60, 240)
+        audioManager.vibrate(60, 250)
 
-        val power = heroProgress.getAbilityPower(heroDef)
-        val baseDmg = heroProgress.getDamage(heroDef) * power
+        val dir = if (player.facingRight) 1f else -1f
 
-        when (heroDef.id) {
-            com.example.game.model.HeroId.BLAZE -> {
-                audioManager.playSound(GameAudioManager.SoundType.ABILITY_FIRE)
-                // Fire explosion 360 ring
-                val blastRadius = 240f
-                enemies.forEach { enemy ->
-                    if (enemy.isAlive() && player.pos.distanceTo(enemy.pos) <= blastRadius) {
-                        applyDamageToEnemy(enemy, baseDmg * 2.8f, isCritical = true)
-                        val knockDir = (enemy.pos - player.pos).normalize()
-                        enemy.pos = enemy.pos + knockDir * 60f
+        when (characterDef.id) {
+            com.example.game.model.CharacterId.BLADE -> {
+                audioManager.playSound(GameAudioManager.SoundType.ATTACK)
+                // Whirlwind dash slashes
+                player.invulnerableTimer = 0.4f
+                player.pos.x += dir * 180f
+                for (e in enemies) {
+                    if (e.isAlive() && abs(e.pos.x - player.pos.x) < 140f && abs(e.pos.y - player.pos.y) < 60f) {
+                        applyDamageToEnemy(e, player.attackStat * 2.5f, isCritical = true)
                     }
                 }
-                groundZones.add(
-                    GroundZone(
-                        id = nextEntityId++,
-                        x = player.pos.x,
-                        y = player.pos.y,
-                        radius = blastRadius,
-                        duration = 1.0f,
-                        maxDuration = 1.0f,
-                        type = GroundZoneType.GROUND_SMASH_CRATER,
-                        color = 0xFFFF5722,
-                        ownerIsPlayer = true
-                    )
-                )
-                // Burst particles
-                for (i in 0 until 40) {
-                    val angle = Random.nextFloat() * PI.toFloat() * 2f
-                    val speed = Random.nextFloat() * 240f + 60f
-                    particles.add(
-                        Particle(
-                            x = player.pos.x,
-                            y = player.pos.y,
-                            vx = cos(angle) * speed,
-                            vy = sin(angle) * speed,
-                            radius = Random.nextFloat() * 8f + 4f,
-                            color = if (i % 2 == 0) 0xFFFF3D00 else 0xFFFFEA00,
-                            maxLife = 0.55f,
-                            isSpark = true
-                        )
-                    )
+                spawnBurstParticles(player.pos.x, player.pos.y - 20f, playerSkin.glowColor, 12)
+            }
+            com.example.game.model.CharacterId.GUNNER -> {
+                audioManager.playSound(GameAudioManager.SoundType.ABILITY_LIGHTNING)
+                // 360 Bullet storm
+                for (angleDeg in 0 until 360 step 45) {
+                    val rad = angleDeg * PI.toFloat() / 180f
+                    val spd = 580f
+                    spawnProjectile(player.pos.x, player.pos.y - 20f, cos(rad) * spd, sin(rad) * spd, 4.5f, 0xFFFFD600, player.attackStat * 1.2f, isPlayer = true, pierce = true)
                 }
             }
-
-            com.example.game.model.HeroId.FROST -> {
+            com.example.game.model.CharacterId.HAMMER -> {
+                audioManager.playSound(GameAudioManager.SoundType.ABILITY_FIRE)
+                triggerScreenShake(12f)
+                // Earth smash quakes
+                for (e in enemies) {
+                    if (e.isAlive() && abs(e.pos.x - player.pos.x) < 220f) {
+                        applyDamageToEnemy(e, player.attackStat * 2.8f, isCritical = true)
+                        e.vel.y = -280f
+                    }
+                }
+                spawnBurstParticles(player.pos.x + dir * 40f, groundY, 0xFFFF9100, 14)
+            }
+            com.example.game.model.CharacterId.NINJA -> {
+                audioManager.playSound(GameAudioManager.SoundType.HIT)
+                // Teleport to nearest enemy
+                var targetE: EnemyWarrior? = null
+                var closestDist = 9999f
+                for (e in enemies) {
+                    if (e.isAlive()) {
+                        val d = abs(e.pos.x - player.pos.x)
+                        if (d < closestDist && d < 400f) {
+                            closestDist = d
+                            targetE = e
+                        }
+                    }
+                }
+                if (targetE != null) {
+                    player.pos.x = targetE.pos.x - dir * 40f
+                    applyDamageToEnemy(targetE, player.attackStat * 3.0f, isCritical = true)
+                } else {
+                    player.pos.x += dir * 220f
+                }
+                spawnBurstParticles(player.pos.x, player.pos.y - 20f, 0xFFE040FB, 10)
+            }
+            com.example.game.model.CharacterId.ARCHER -> {
                 audioManager.playSound(GameAudioManager.SoundType.ABILITY_ICE)
-                // Absolute Zero: freezes all enemies in the arena
-                enemies.forEach { enemy ->
-                    if (enemy.isAlive()) {
-                        enemy.frozenTimer = 3.5f
-                        applyDamageToEnemy(enemy, baseDmg * 1.8f, isCritical = false)
-                    }
-                }
-                groundZones.add(
-                    GroundZone(
-                        id = nextEntityId++,
-                        x = player.pos.x,
-                        y = player.pos.y,
-                        radius = 320f,
-                        duration = 3.5f,
-                        maxDuration = 3.5f,
-                        type = GroundZoneType.BLIZZARD_FROST,
-                        color = 0xFF00E5FF,
-                        ownerIsPlayer = true
-                    )
-                )
-                for (i in 0 until 35) {
-                    val angle = Random.nextFloat() * PI.toFloat() * 2f
-                    particles.add(
-                        Particle(
-                            x = player.pos.x + cos(angle) * 140f,
-                            y = player.pos.y + sin(angle) * 140f,
-                            vx = cos(angle) * 110f,
-                            vy = sin(angle) * 110f,
-                            radius = 7f,
-                            color = 0xFF80D8FF,
-                            maxLife = 0.8f,
-                            isSpark = true
-                        )
-                    )
+                // Rain of arrows from sky
+                for (offset in -80..80 step 40) {
+                    val px = player.pos.x + dir * 140f + offset
+                    spawnProjectile(px, player.pos.y - 320f, 0f, 650f, 4f, 0xFF76FF03, player.attackStat * 1.5f, isPlayer = true)
                 }
             }
-
-            com.example.game.model.HeroId.SHADOW -> {
-                audioManager.playSound(GameAudioManager.SoundType.HIT)
-                // Shadow Dash: invulnerable flurry strike
-                player.invulnerableTimer = 1.0f
-                val nearby = enemies.filter { it.isAlive() && player.pos.distanceTo(it.pos) <= 280f }
-                nearby.forEach { enemy ->
-                    for (slash in 0 until 3) {
-                        applyDamageToEnemy(enemy, baseDmg * 1.3f, isCritical = true)
+            com.example.game.model.CharacterId.SPEARMAN -> {
+                audioManager.playSound(GameAudioManager.SoundType.DASH)
+                player.invulnerableTimer = 0.5f
+                player.vel.x = dir * 650f
+                player.pos.x += dir * 200f
+                for (e in enemies) {
+                    if (e.isAlive() && abs(e.pos.x - player.pos.x) < 180f) {
+                        applyDamageToEnemy(e, player.attackStat * 2.2f, isCritical = true)
+                        e.vel.x = dir * 300f
                     }
-                    enemy.pos = enemy.pos + Vector2(Random.nextFloat() * 30f - 15f, Random.nextFloat() * 30f - 15f)
                 }
-                // Teleport slightly forward
-                val fwd = Vector2(cos(player.facingAngle), sin(player.facingAngle))
-                player.pos = player.pos + fwd * 120f
-                clampPosition(player.pos, player.radius)
-                for (i in 0 until 30) {
-                    particles.add(
-                        Particle(
-                            x = player.pos.x + Random.nextFloat() * 40f - 20f,
-                            y = player.pos.y + Random.nextFloat() * 40f - 20f,
-                            vx = Random.nextFloat() * 200f - 100f,
-                            vy = Random.nextFloat() * 200f - 100f,
-                            radius = 6f,
-                            color = 0xFFE040FB,
-                            maxLife = 0.45f
-                        )
-                    )
-                }
+                spawnBurstParticles(player.pos.x, player.pos.y - 20f, 0xFF2979FF, 10)
             }
-
-            com.example.game.model.HeroId.TITAN -> {
+            com.example.game.model.CharacterId.FLAME -> {
                 audioManager.playSound(GameAudioManager.SoundType.ABILITY_FIRE)
-                // Ground Smash: crater + stun
-                val smashRadius = 260f
-                enemies.forEach { enemy ->
-                    if (enemy.isAlive() && player.pos.distanceTo(enemy.pos) <= smashRadius) {
-                        enemy.frozenTimer = 2.5f // stun
-                        applyDamageToEnemy(enemy, baseDmg * 3.2f, isCritical = true)
-                        val knockDir = (enemy.pos - player.pos).normalize()
-                        enemy.pos = enemy.pos + knockDir * 70f
+                for (e in enemies) {
+                    if (e.isAlive() && abs(e.pos.x - player.pos.x) < 170f) {
+                        applyDamageToEnemy(e, player.attackStat * 2.4f, isCritical = true)
                     }
                 }
-                groundZones.add(
-                    GroundZone(
-                        id = nextEntityId++,
-                        x = player.pos.x,
-                        y = player.pos.y,
-                        radius = smashRadius,
-                        duration = 1.5f,
-                        maxDuration = 1.5f,
-                        type = GroundZoneType.GROUND_SMASH_CRATER,
-                        color = 0xFFFFB300,
-                        ownerIsPlayer = true
-                    )
-                )
+                spawnBurstParticles(player.pos.x, player.pos.y - 20f, 0xFFFF3D00, 16)
             }
-
-            com.example.game.model.HeroId.VOLT -> {
+            com.example.game.model.CharacterId.CYBER -> {
                 audioManager.playSound(GameAudioManager.SoundType.ABILITY_LIGHTNING)
-                // Chain lightning to up to 6 enemies
-                val aliveEnemies = enemies.filter { it.isAlive() }.toMutableList()
-                var currentTarget: EnemyEntity? = findNearestEnemy(player.pos, 350f)
-                var chainCount = 0
-
-                while (currentTarget != null && chainCount < 6) {
-                    applyDamageToEnemy(currentTarget, baseDmg * 1.9f, isCritical = (Random.nextFloat() < 0.4f))
-                    // Emit lightning spark particles between chain points
-                    val startP = if (chainCount == 0) player.pos else currentTarget.pos
-                    for (i in 0 until 8) {
-                        particles.add(
-                            Particle(
-                                x = startP.x + (currentTarget.pos.x - startP.x) * (i / 8f),
-                                y = startP.y + (currentTarget.pos.y - startP.y) * (i / 8f) + (Random.nextFloat() * 20f - 10f),
-                                vx = Random.nextFloat() * 50f - 25f,
-                                vy = Random.nextFloat() * 50f - 25f,
-                                radius = 5f,
-                                color = 0xFFFFEA00,
-                                maxLife = 0.25f,
-                                isSpark = true
-                            )
-                        )
-                    }
-                    aliveEnemies.remove(currentTarget)
-                    chainCount++
-                    currentTarget = aliveEnemies.minByOrNull { currentTarget!!.pos.distanceTo(it.pos) }
-                }
+                // Overcharged cannon laser
+                spawnProjectile(player.pos.x + dir * 40f, player.pos.y - 22f, dir * 750f, 0f, 12f, 0xFF00E5FF, player.attackStat * 3.2f, isPlayer = true, pierce = true)
             }
-
-            com.example.game.model.HeroId.NATURE -> {
-                audioManager.playSound(GameAudioManager.SoundType.ABILITY_HEAL)
-                // Heal 50% max HP + Healing ground zone
-                val healAmount = player.maxHealth * 0.50f
-                player.health = (player.health + healAmount).coerceAtMost(player.maxHealth)
-                damageNumbers.add(
-                    DamageNumber(
-                        id = nextEntityId++,
-                        text = "+${healAmount.toInt()} HP",
-                        x = player.pos.x,
-                        y = player.pos.y - 40f,
-                        color = 0xFF00E676,
-                        isCritical = true
-                    )
-                )
-                groundZones.add(
-                    GroundZone(
-                        id = nextEntityId++,
-                        x = player.pos.x,
-                        y = player.pos.y,
-                        radius = 200f,
-                        duration = 4.0f,
-                        maxDuration = 4.0f,
-                        type = GroundZoneType.HEALING_AURA,
-                        color = 0xFF00E676,
-                        ownerIsPlayer = true
-                    )
-                )
-            }
-
-            com.example.game.model.HeroId.PHANTOM -> {
+            com.example.game.model.CharacterId.PHANTOM -> {
                 audioManager.playSound(GameAudioManager.SoundType.HIT)
-                // Teleport behind highest health enemy and execute backstab
-                val target = enemies.filter { it.isAlive() }.maxByOrNull { it.health }
-                if (target != null) {
-                    val angle = target.facingAngle + PI.toFloat()
-                    player.pos = Vector2(target.pos.x + cos(angle) * 45f, target.pos.y + sin(angle) * 45f)
-                    player.facingAngle = player.pos.angleTo(target.pos)
-                    clampPosition(player.pos, player.radius)
-                    applyDamageToEnemy(target, baseDmg * 4.2f, isCritical = true)
-                    for (i in 0 until 20) {
-                        particles.add(
-                            Particle(
-                                x = target.pos.x,
-                                y = target.pos.y,
-                                vx = Random.nextFloat() * 180f - 90f,
-                                vy = Random.nextFloat() * 180f - 90f,
-                                radius = 7f,
-                                color = 0xFF7C4DFF,
-                                maxLife = 0.4f
-                            )
-                        )
-                    }
-                }
+                player.invulnerableTimer = 1.8f // Ethereal phase
+                spawnBurstParticles(player.pos.x, player.pos.y - 20f, 0xFF7C4DFF, 12)
             }
-
-            com.example.game.model.HeroId.VENOM -> {
+            com.example.game.model.CharacterId.DRAGON -> {
                 audioManager.playSound(GameAudioManager.SoundType.ABILITY_FIRE)
-                // Poison Cloud zone
-                groundZones.add(
-                    GroundZone(
-                        id = nextEntityId++,
-                        x = player.pos.x,
-                        y = player.pos.y,
-                        radius = 180f,
-                        duration = 5.5f,
-                        maxDuration = 5.5f,
-                        type = GroundZoneType.POISON_CLOUD,
-                        color = 0xFF76FF03,
-                        ownerIsPlayer = true
-                    )
-                )
+                // Dragon wave projectile
+                spawnProjectile(player.pos.x + dir * 45f, player.pos.y - 25f, dir * 550f, 0f, 16f, 0xFFFF1744, player.attackStat * 3.8f, isPlayer = true, pierce = true)
+                spawnBurstParticles(player.pos.x, player.pos.y - 20f, 0xFFFF1744, 16)
             }
+        }
+    }
 
-            com.example.game.model.HeroId.SOLAR -> {
-                audioManager.playSound(GameAudioManager.SoundType.ABILITY_LIGHTNING)
-                // Solar Beam forward
-                val fwd = Vector2(cos(player.facingAngle), sin(player.facingAngle))
-                for (step in 1..8) {
-                    val beamPos = player.pos + fwd * (step * 45f)
-                    enemies.forEach { enemy ->
-                        if (enemy.isAlive() && enemy.pos.distanceTo(beamPos) <= 45f) {
-                            applyDamageToEnemy(enemy, baseDmg * 2.2f, isCritical = true)
-                        }
+    private fun checkSpawners() {
+        for (i in spawnTriggerXs.indices) {
+            val trigX = spawnTriggerXs[i]
+            if (!spawnTriggered[i] && player.pos.x >= trigX) {
+                spawnTriggered[i] = true
+
+                if (stageNumber == 4 && i == spawnTriggerXs.size - 1) {
+                    // Spawn World Boss!
+                    spawnBoss()
+                } else {
+                    // Spawn standard/elite wave
+                    val eType = when (i % 3) {
+                        0 -> EnemyType.BASIC_FIGHTER
+                        1 -> EnemyType.FAST_FIGHTER
+                        else -> EnemyType.HEAVY_FIGHTER
                     }
-                    particles.add(
-                        Particle(
-                            x = beamPos.x,
-                            y = beamPos.y,
-                            vx = Random.nextFloat() * 40f - 20f,
-                            vy = Random.nextFloat() * 40f - 20f,
-                            radius = 16f,
-                            color = 0xFFFFD700,
-                            maxLife = 0.45f
-                        )
-                    )
-                }
-            }
-
-            com.example.game.model.HeroId.DRAGON -> {
-                audioManager.playSound(GameAudioManager.SoundType.ABILITY_FIRE)
-                // Dragon Flame cone barrage
-                val coneAngles = listOf(-0.35f, -0.18f, 0f, 0.18f, 0.35f)
-                coneAngles.forEach { angleOffset ->
-                    val angle = player.facingAngle + angleOffset
-                    val dir = Vector2(cos(angle), sin(angle))
-                    projectiles.add(
-                        Projectile(
-                            id = nextEntityId++,
-                            pos = Vector2(player.pos.x, player.pos.y),
-                            vel = dir * 420f,
-                            radius = 18f,
-                            damage = baseDmg * 2.5f,
-                            isPlayer = true,
-                            lifeTimer = 0.9f,
-                            maxLife = 0.9f,
-                            color = 0xFFFF1744,
-                            pierces = true,
-                            effectType = ElementType.DRAGON_FIRE
-                        )
-                    )
+                    spawnEnemyAt(trigX + 300f, eType)
+                    if (stageNumber >= 2) {
+                        spawnEnemyAt(trigX + 380f, EnemyType.RANGED_FIGHTER)
+                    }
+                    if (stageNumber >= 3 && i == 3) {
+                        spawnEnemyAt(trigX + 440f, EnemyType.ELITE_FIGHTER)
+                    }
                 }
             }
         }
     }
 
-    private fun updateProjectiles(dt: Float) {
-        val iterator = projectiles.iterator()
-        while (iterator.hasNext()) {
-            val proj = iterator.next()
-            proj.lifeTimer -= dt
-            proj.pos = proj.pos + proj.vel * dt
+    private fun spawnBoss() {
+        isBossFightTriggered = true
+        audioManager.playSound(GameAudioManager.SoundType.WARNING)
+        audioManager.vibrate(60, 240)
+        triggerScreenShake(8f)
 
-            // Trail particles
-            if (Random.nextFloat() < 0.4f) {
-                particles.add(
-                    Particle(
-                        x = proj.pos.x,
-                        y = proj.pos.y,
-                        vx = -proj.vel.x * 0.1f,
-                        vy = -proj.vel.y * 0.1f,
-                        radius = proj.radius * 0.6f,
-                        color = proj.color,
-                        maxLife = 0.2f
-                    )
+        for (e in enemies) {
+            if (!e.active) {
+                e.spawn(
+                    eType = EnemyType.BOSS,
+                    spawnX = stageLength - 280f,
+                    spawnY = groundY,
+                    customBossDef = worldDef.bossDef
                 )
-            }
-
-            // Boundary collision
-            if (proj.pos.x < minX || proj.pos.x > maxX || proj.pos.y < minY || proj.pos.y > maxY || proj.lifeTimer <= 0f) {
-                iterator.remove()
-                continue
-            }
-
-            // Hit detection
-            if (proj.isPlayer) {
-                var collided = false
-                for (enemy in enemies) {
-                    if (enemy.isAlive() && proj.pos.distanceTo(enemy.pos) <= proj.radius + enemy.radius) {
-                        applyDamageToEnemy(enemy, proj.damage, isCritical = (Random.nextFloat() < 0.2f))
-                        if (!proj.pierces) {
-                            collided = true
-                            break
-                        }
-                    }
-                }
-                if (collided) {
-                    iterator.remove()
-                }
-            } else {
-                // Enemy projectile hitting player
-                if (player.invulnerableTimer <= 0f && proj.pos.distanceTo(player.pos) <= proj.radius + player.radius) {
-                    applyDamageToPlayer(proj.damage)
-                    iterator.remove()
-                }
+                activeBoss = e
+                break
             }
         }
     }
 
-    private fun updateGroundZones(dt: Float) {
-        val iterator = groundZones.iterator()
-        while (iterator.hasNext()) {
-            val zone = iterator.next()
-            zone.duration -= dt
-
-            if (zone.type == GroundZoneType.HEALING_AURA && zone.ownerIsPlayer) {
-                // Heals player if standing in it
-                if (player.pos.distanceTo(Vector2(zone.x, zone.y)) <= zone.radius) {
-                    player.health = (player.health + dt * 25f).coerceAtMost(player.maxHealth)
-                }
-                // Thorns damage to enemies
-                enemies.forEach { enemy ->
-                    if (enemy.isAlive() && enemy.pos.distanceTo(Vector2(zone.x, zone.y)) <= zone.radius) {
-                        applyDamageToEnemy(enemy, dt * 35f, isCritical = false)
-                    }
-                }
-            } else if (zone.type == GroundZoneType.POISON_CLOUD && zone.ownerIsPlayer) {
-                enemies.forEach { enemy ->
-                    if (enemy.isAlive() && enemy.pos.distanceTo(Vector2(zone.x, zone.y)) <= zone.radius) {
-                        applyDamageToEnemy(enemy, dt * 50f, isCritical = false)
-                    }
-                }
-            } else if (zone.type == GroundZoneType.BOSS_WARNING_CIRCLE) {
-                // Warning indicator counts down to blast
-                if (zone.duration <= 0.05f) {
-                    // Explode!
-                    if (player.pos.distanceTo(Vector2(zone.x, zone.y)) <= zone.radius && player.invulnerableTimer <= 0f) {
-                        applyDamageToPlayer(55f)
-                    }
-                    triggerScreenShake(7f)
-                    audioManager.playSound(GameAudioManager.SoundType.ABILITY_FIRE)
-                }
-            }
-
-            if (zone.duration <= 0f) {
-                iterator.remove()
+    private fun spawnEnemyAt(x: Float, type: EnemyType) {
+        val clampedX = x.coerceIn(100f, stageLength - 60f)
+        for (e in enemies) {
+            if (!e.active) {
+                e.spawn(type, clampedX, groundY, hpScale = 1f + (stageNumber - 1) * 0.15f)
+                break
             }
         }
     }
 
     private fun updateEnemies(dt: Float) {
-        val iterator = enemies.iterator()
-        while (iterator.hasNext()) {
-            val enemy = iterator.next()
-            if (!enemy.isAlive()) {
-                onEnemyKilled(enemy)
-                iterator.remove()
+        for (e in enemies) {
+            if (!e.active) continue
+
+            // Death fade check
+            if (!e.isAlive()) {
+                e.deathFadeTimer += dt
+                e.animState = AnimState.DEATH
+                e.pose.compute(e.animState, e.animTimer, e.facingRight)
+                if (e.deathFadeTimer >= 0.7f) {
+                    e.active = false
+                }
                 continue
             }
 
             // Timers
-            if (enemy.hitFlashTimer > 0f) enemy.hitFlashTimer -= dt
-            if (enemy.attackCooldownTimer > 0f) enemy.attackCooldownTimer -= dt
+            if (e.attackCooldownTimer > 0f) e.attackCooldownTimer -= dt
+            if (e.hitFlashTimer > 0f) e.hitFlashTimer -= dt
+            e.animTimer += dt
 
-            // Frozen effect
-            if (enemy.frozenTimer > 0f) {
-                enemy.frozenTimer -= dt
+            val distToPlayer = player.pos.distanceTo(e.pos)
+            val dx = player.pos.x - e.pos.x
+            e.facingRight = dx > 0f
+
+            // Boss Pattern Handling
+            if (e.isBoss) {
+                e.bossPatternTimer -= dt
+                if (e.bossPatternTimer <= 0f) {
+                    e.bossPattern = (e.bossPattern + 1) % 3
+                    e.bossPatternTimer = 2.8f
+                    audioManager.playSound(GameAudioManager.SoundType.BOSS_ATTACK)
+
+                    when (e.bossPattern) {
+                        0 -> {
+                            // Charge rush
+                            e.vel.x = (if (e.facingRight) 1f else -1f) * 320f
+                        }
+                        1 -> {
+                            // Heavy slam shockwave
+                            triggerScreenShake(7f)
+                            spawnBurstParticles(e.pos.x, groundY, worldDef.bossDef.color, 12)
+                            if (distToPlayer < 240f) {
+                                applyDamageToPlayer(e.attackStat * 1.3f)
+                            }
+                        }
+                        2 -> {
+                            // Fire energy orbs
+                            val dir = if (e.facingRight) 1f else -1f
+                            spawnProjectile(e.pos.x, e.pos.y - 25f, dir * 420f, 0f, 7f, worldDef.bossDef.color, e.attackStat * 0.9f, isPlayer = false)
+                        }
+                    }
+                }
+            }
+
+            // Simple AI Logic
+            e.aiDecisionTimer -= dt
+            if (e.aiDecisionTimer <= 0f) {
+                e.aiDecisionTimer = 0.2f
+                val hpRatio = e.hp / e.maxHp
+                e.aiState = when {
+                    hpRatio < 0.25f && distToPlayer < 80f && !e.isBoss -> AIBehaviorState.RETREAT
+                    distToPlayer <= e.attackRange + 10f -> AIBehaviorState.ATTACK
+                    distToPlayer <= 500f -> AIBehaviorState.FOLLOW
+                    else -> AIBehaviorState.IDLE
+                }
+            }
+
+            // Execute Movement
+            when (e.aiState) {
+                AIBehaviorState.FOLLOW -> {
+                    val dir = if (dx > 0) 1f else -1f
+                    e.vel.x = dir * e.speedStat
+                    e.pos.x += e.vel.x * dt
+                    e.animState = AnimState.RUN
+                }
+                AIBehaviorState.RETREAT -> {
+                    val dir = if (dx > 0) -1f else 1f
+                    e.vel.x = dir * (e.speedStat * 0.8f)
+                    e.pos.x += e.vel.x * dt
+                    e.animState = AnimState.RUN
+                }
+                AIBehaviorState.ATTACK -> {
+                    e.vel.x = 0f
+                    e.animState = AnimState.ATTACK_LIGHT
+                    if (e.attackCooldownTimer <= 0f) {
+                        e.attackCooldownTimer = if (e.type == EnemyType.RANGED_FIGHTER) 1.8f else 1.1f
+                        if (e.type == EnemyType.RANGED_FIGHTER) {
+                            val dir = if (e.facingRight) 1f else -1f
+                            spawnProjectile(e.pos.x + dir * 25f, e.pos.y - 20f, dir * 380f, 0f, 4f, e.type.color, e.attackStat, isPlayer = false)
+                        } else {
+                            if (distToPlayer <= e.attackRange + player.radius) {
+                                applyDamageToPlayer(e.attackStat)
+                            }
+                        }
+                    }
+                }
+                AIBehaviorState.IDLE -> {
+                    e.vel.x = 0f
+                    e.animState = AnimState.IDLE
+                }
+                else -> {}
+            }
+
+            // Ground Clamp
+            e.pos.y = groundY
+            e.pos.x = e.pos.x.coerceIn(40f, stageLength - 40f)
+            e.pose.compute(e.animState, e.animTimer, e.facingRight)
+        }
+    }
+
+    private fun updateProjectiles(dt: Float) {
+        for (p in projectiles) {
+            if (!p.active) continue
+            p.update(dt)
+
+            // Screen bounds cull
+            if (p.x < cameraX - 50f || p.x > cameraX + viewportWidth + 50f || p.y < 0f || p.y > groundY + 20f) {
+                p.active = false
                 continue
             }
 
-            // Distance & Angle to player
-            val distToPlayer = enemy.pos.distanceTo(player.pos)
-            enemy.facingAngle = enemy.pos.angleTo(player.pos)
-
-            if (enemy.isBoss) {
-                updateBossAI(enemy, dt, distToPlayer)
-            } else {
-                updateStandardEnemyAI(enemy, dt, distToPlayer)
-            }
-
-            // Clamp position
-            clampPosition(enemy.pos, enemy.radius)
-            resolveObstacleCollision(enemy.pos, enemy.radius)
-        }
-    }
-
-    private fun updateStandardEnemyAI(enemy: EnemyEntity, dt: Float, distToPlayer: Float) {
-        val dirToPlayer = (player.pos - enemy.pos).normalize()
-
-        when (enemy.type) {
-            EnemyType.RANGED -> {
-                // Keep distance: retreat if too close, advance if too far
-                val desiredDist = 260f
-                if (distToPlayer < desiredDist - 40f) {
-                    enemy.vel = dirToPlayer * (-enemy.baseSpeed * 0.8f)
-                } else if (distToPlayer > desiredDist + 40f) {
-                    enemy.vel = dirToPlayer * enemy.baseSpeed
-                } else {
-                    enemy.vel = Vector2(0f, 0f)
-                }
-
-                // Fire dark projectile
-                if (enemy.attackCooldownTimer <= 0f && distToPlayer <= 380f) {
-                    enemy.attackCooldownTimer = 2.0f
-                    val projVel = dirToPlayer * 280f
-                    projectiles.add(
-                        Projectile(
-                            id = nextEntityId++,
-                            pos = Vector2(enemy.pos.x, enemy.pos.y),
-                            vel = projVel,
-                            radius = 9f,
-                            damage = enemy.damage,
-                            isPlayer = false,
-                            lifeTimer = 1.8f,
-                            maxLife = 1.8f,
-                            color = 0xFF7C4DFF
-                        )
-                    )
-                }
-            }
-
-            EnemyType.FAST -> {
-                // Circling and fast darting
-                val tangent = Vector2(-dirToPlayer.y, dirToPlayer.x)
-                enemy.vel = (dirToPlayer * 0.7f + tangent * 0.5f).normalize() * enemy.baseSpeed
-                if (distToPlayer <= enemy.radius + player.radius + 10f && enemy.attackCooldownTimer <= 0f) {
-                    enemy.attackCooldownTimer = 1.1f
-                    applyDamageToPlayer(enemy.damage)
-                }
-            }
-
-            else -> {
-                // Swarm player
-                enemy.vel = dirToPlayer * enemy.baseSpeed
-                if (distToPlayer <= enemy.radius + player.radius + 12f && enemy.attackCooldownTimer <= 0f) {
-                    enemy.attackCooldownTimer = 1.3f
-                    applyDamageToPlayer(enemy.damage)
-                }
-            }
-        }
-
-        // Apply separation from other enemies
-        enemies.forEach { other ->
-            if (other != enemy && other.isAlive()) {
-                val d = enemy.pos.distanceTo(other.pos)
-                if (d < enemy.radius + other.radius) {
-                    val push = (enemy.pos - other.pos).normalize() * (30f)
-                    enemy.pos = enemy.pos + push * dt
-                }
-            }
-        }
-
-        enemy.pos = enemy.pos + enemy.vel * dt
-    }
-
-    private fun updateBossAI(boss: EnemyEntity, dt: Float, distToPlayer: Float) {
-        boss.specialAttackTimer -= dt
-        val dirToPlayer = (player.pos - boss.pos).normalize()
-
-        // Move towards player slowly
-        boss.vel = dirToPlayer * boss.baseSpeed
-        boss.pos = boss.pos + boss.vel * dt
-
-        // Melee hit if player gets too close
-        if (distToPlayer <= boss.radius + player.radius + 10f && boss.attackCooldownTimer <= 0f) {
-            boss.attackCooldownTimer = 1.8f
-            applyDamageToPlayer(boss.damage * 0.9f)
-            triggerScreenShake(6f)
-        }
-
-        // Boss Special Abilities
-        if (boss.specialAttackTimer <= 0f) {
-            boss.specialAttackTimer = Random.nextFloat() * 2f + 3.5f
-
-            when (boss.type) {
-                EnemyType.BOSS_BEHEMOTH -> {
-                    // Stomp shockwave warning circle
-                    groundZones.add(
-                        GroundZone(
-                            id = nextEntityId++,
-                            x = boss.pos.x,
-                            y = boss.pos.y,
-                            radius = 210f,
-                            duration = 1.2f,
-                            maxDuration = 1.2f,
-                            type = GroundZoneType.BOSS_WARNING_CIRCLE,
-                            color = 0xFFFF1744,
-                            ownerIsPlayer = false
-                        )
-                    )
-                    audioManager.playSound(GameAudioManager.SoundType.WARNING)
-                }
-
-                EnemyType.BOSS_PHARAOH -> {
-                    // Triple sand orbs spread
-                    val baseAngle = boss.pos.angleTo(player.pos)
-                    listOf(-0.35f, 0f, 0.35f).forEach { offset ->
-                        val a = baseAngle + offset
-                        val pDir = Vector2(cos(a), sin(a))
-                        projectiles.add(
-                            Projectile(
-                                id = nextEntityId++,
-                                pos = Vector2(boss.pos.x, boss.pos.y),
-                                vel = pDir * 290f,
-                                radius = 12f,
-                                damage = 35f,
-                                isPlayer = false,
-                                lifeTimer = 2.0f,
-                                maxLife = 2.0f,
-                                color = 0xFFFFB300
-                            )
-                        )
+            if (p.isPlayerSource) {
+                // Check enemy hits
+                for (e in enemies) {
+                    if (!e.isAlive()) continue
+                    val dist = Vector2(p.x, p.y).distanceTo(e.pos)
+                    if (dist <= p.radius + e.radius) {
+                        applyDamageToEnemy(e, p.damage, isCritical = false)
+                        spawnParticle(p.x, p.y, -p.vx * 0.2f, -p.vy * 0.2f, 3.5f, p.color, 0.2f)
+                        if (!p.piercing) {
+                            p.active = false
+                            break
+                        }
                     }
-                    audioManager.playSound(GameAudioManager.SoundType.ABILITY_LIGHTNING)
                 }
-
-                EnemyType.BOSS_CYBER -> {
-                    // Laser sweep or drone barrage
-                    groundZones.add(
-                        GroundZone(
-                            id = nextEntityId++,
-                            x = player.pos.x,
-                            y = player.pos.y,
-                            radius = 160f,
-                            duration = 1.4f,
-                            maxDuration = 1.4f,
-                            type = GroundZoneType.BOSS_WARNING_CIRCLE,
-                            color = 0xFF00E5FF,
-                            ownerIsPlayer = false
-                        )
-                    )
-                    audioManager.playSound(GameAudioManager.SoundType.WARNING)
+            } else {
+                // Check player hit
+                val dist = Vector2(p.x, p.y).distanceTo(player.pos)
+                if (dist <= p.radius + player.radius) {
+                    applyDamageToPlayer(p.damage)
+                    spawnParticle(p.x, p.y, -p.vx * 0.2f, 0f, 3.5f, p.color, 0.2f)
+                    p.active = false
                 }
-
-                else -> {}
             }
         }
     }
 
-    private fun applyDamageToPlayer(damage: Float) {
-        if (player.invulnerableTimer > 0f || isGameOver || isVictory) return
+    private fun applyDamageToPlayer(rawDmg: Float) {
+        if (player.invulnerableTimer > 0f || !player.isAlive()) return
 
-        player.health -= damage
-        player.damageFlashTimer = 0.25f
-        player.invulnerableTimer = 0.55f
-        triggerScreenShake(7f)
+        val mitigation = 100f / (100f + player.defenseStat)
+        val finalDmg = (rawDmg * mitigation).coerceAtLeast(8f)
+
+        player.hp = (player.hp - finalDmg).coerceAtLeast(0f)
+        player.hitFlashTimer = 0.14f
+        player.invulnerableTimer = 0.35f
+        player.knockbackTimer = 0.16f
+        player.vel.x = (if (player.facingRight) -1f else 1f) * 160f
+
+        spawnDamageNumber("${finalDmg.toInt()}", player.pos.x, player.pos.y - 35f, 0xFFFF5252)
         audioManager.playSound(GameAudioManager.SoundType.HIT)
-        audioManager.vibrate(50, 220)
+        audioManager.vibrate(45, 200)
+        triggerScreenShake(4.5f)
 
-        damageNumbers.add(
-            DamageNumber(
-                id = nextEntityId++,
-                text = "-${damage.toInt()}",
-                x = player.pos.x + Random.nextFloat() * 20f - 10f,
-                y = player.pos.y - 30f,
-                color = 0xFFFF1744,
-                isCritical = true
-            )
-        )
-
-        if (player.health <= 0f) {
-            player.health = 0f
+        if (player.hp <= 0f) {
             isGameOver = true
             audioManager.playSound(GameAudioManager.SoundType.DEFEAT)
-            audioManager.vibrate(100, 255)
+            audioManager.vibrate(80, 250)
         }
     }
 
-    private fun applyDamageToEnemy(enemy: EnemyEntity, damage: Float, isCritical: Boolean) {
-        enemy.health -= damage
-        enemy.hitFlashTimer = 0.15f
+    private fun applyDamageToEnemy(e: EnemyWarrior, dmg: Float, isCritical: Boolean) {
+        e.hp = (e.hp - dmg).coerceAtLeast(0f)
+        e.hitFlashTimer = 0.12f
 
-        val finalDmg = damage * (if (isCritical) 1.5f else 1.0f)
-        damageNumbers.add(
-            DamageNumber(
-                id = nextEntityId++,
-                text = "${finalDmg.toInt()}",
-                x = enemy.pos.x + Random.nextFloat() * 24f - 12f,
-                y = enemy.pos.y - 25f,
-                color = if (isCritical) 0xFFFFEA00 else 0xFFFFFFFF,
-                isCritical = isCritical
-            )
-        )
+        spawnDamageNumber("${dmg.toInt()}", e.pos.x, e.pos.y - 30f, if (isCritical) 0xFFFFD700 else 0xFFFFFFFF, isCritical)
 
-        // Spawn hit blood/sparks
-        for (i in 0 until 5) {
-            particles.add(
-                Particle(
-                    x = enemy.pos.x,
-                    y = enemy.pos.y,
-                    vx = Random.nextFloat() * 120f - 60f,
-                    vy = Random.nextFloat() * 120f - 60f,
-                    radius = 4f,
-                    color = if (isCritical) 0xFFFF9800 else 0xFFE0E0E0,
-                    maxLife = 0.25f,
-                    isSpark = true
-                )
-            )
-        }
-    }
-
-    private fun onEnemyKilled(enemy: EnemyEntity) {
-        runEnemiesDefeated++
-        val coinValue = if (enemy.isBoss) 150 else if (enemy.type == EnemyType.ELITE) 40 else (8..18).random()
-        runCoinsEarned += coinValue
-        runXpEarned += if (enemy.isBoss) 200 else (15..35).random()
-
-        audioManager.playSound(GameAudioManager.SoundType.COIN)
-
-        // Spawn coins
-        floatingCoins.add(
-            FloatingCoin(
-                id = nextEntityId++,
-                pos = Vector2(enemy.pos.x, enemy.pos.y),
-                vel = Vector2(Random.nextFloat() * 80f - 40f, Random.nextFloat() * 80f - 40f),
-                value = coinValue,
-                isGem = (enemy.isBoss || Random.nextFloat() < 0.08f)
-            )
-        )
-
-        // Death explosion particles
-        for (i in 0 until (if (enemy.isBoss) 45 else 14)) {
-            val angle = Random.nextFloat() * PI.toFloat() * 2f
-            val speed = Random.nextFloat() * 160f + 40f
-            particles.add(
-                Particle(
-                    x = enemy.pos.x,
-                    y = enemy.pos.y,
-                    vx = cos(angle) * speed,
-                    vy = sin(angle) * speed,
-                    radius = Random.nextFloat() * 6f + 3f,
-                    color = if (enemy.isBoss) 0xFFFFD700 else 0xFF9C27B0,
-                    maxLife = 0.45f
-                )
-            )
+        // Hit sparks
+        for (i in 0 until 3) {
+            val ang = Random.nextFloat() * 2f * PI.toFloat()
+            val spd = Random.nextFloat() * 100f + 40f
+            spawnParticle(e.pos.x, e.pos.y - 20f, cos(ang) * spd, sin(ang) * spd, 3.5f, weaponDef.color, 0.22f)
         }
 
-        if (enemy.isBoss) {
-            isBossActive = false
-            bossReference = null
-            triggerVictory()
-        }
-    }
+        if (e.hp <= 0f) {
+            enemiesKilled++
+            xpEarned += (e.maxHp * 0.2f).toInt()
+            audioManager.playSound(GameAudioManager.SoundType.ENEMY_DEATH)
 
-    private fun updateCoins(dt: Float) {
-        val iterator = floatingCoins.iterator()
-        while (iterator.hasNext()) {
-            val coin = iterator.next()
-            coin.life += dt
-            coin.pos = coin.pos + coin.vel * dt
-            coin.vel = coin.vel * 0.92f // friction
+            // Spawn coins
+            val coinCount = if (e.isBoss) 6 else if (e.type == EnemyType.ELITE_FIGHTER) 3 else 1
+            for (i in 0 until coinCount) {
+                spawnCoin(e.pos.x + (i * 12f - 6f), e.pos.y - 10f, if (e.isBoss) 25 else 10)
+            }
 
-            // Magnet towards player
-            val dist = coin.pos.distanceTo(player.pos)
-            if (dist < 150f) {
-                val dir = (player.pos - coin.pos).normalize()
-                coin.pos = coin.pos + dir * (320f * dt)
-                if (dist < player.radius + 12f) {
-                    iterator.remove()
-                    continue
-                }
+            if (e.isBoss) {
+                bossDefeated = true
+                coinsCollected += 200
+                xpEarned += 250
             }
         }
     }
 
-    private fun updateParticles(dt: Float) {
-        val iterator = particles.iterator()
-        while (iterator.hasNext()) {
-            val p = iterator.next()
-            p.life += dt
-            p.x += p.vx * dt
-            p.y += p.vy * dt
-            p.alpha = (1f - (p.life / p.maxLife)).coerceIn(0f, 1f)
-            if (p.life >= p.maxLife) {
-                iterator.remove()
-            }
-        }
-    }
-
-    private fun updateDamageNumbers(dt: Float) {
-        val iterator = damageNumbers.iterator()
-        while (iterator.hasNext()) {
-            val d = iterator.next()
-            d.life += dt
-            d.y -= 45f * dt
-            d.alpha = (1f - (d.life / d.maxLife)).coerceIn(0f, 1f)
-            if (d.life >= d.maxLife) {
-                iterator.remove()
-            }
-        }
-    }
-
-    private fun checkWaveProgression(dt: Float) {
-        if (isGameOver || isVictory) return
-
-        if (gameMode == GameMode.TRAINING) {
-            // Respawn training dummy if none left
-            if (enemies.isEmpty()) {
-                spawnWaveEnemies(1)
-            }
-            return
-        }
-
-        if (enemies.isEmpty() && waveState == WaveState.IN_PROGRESS) {
-            waveState = WaveState.WAVE_CLEARED
-            waveBannerTimer = 1.8f
-            waveBannerText = "WAVE $currentWave CLEARED!"
-            audioManager.playSound(GameAudioManager.SoundType.LEVEL_UP)
-
-            if (gameMode == GameMode.STORY && currentWave >= maxStoryWaves) {
-                triggerVictory()
-            } else {
-                // Next wave
-                startWave(currentWave + 1)
-            }
-        }
-    }
-
-    private fun triggerVictory() {
-        isVictory = true
-        audioManager.playSound(GameAudioManager.SoundType.VICTORY)
-        audioManager.vibrate(80, 240)
+    private fun calculateDamage(attack: Float, defense: Float, isCritical: Boolean): Float {
+        val mitigation = 100f / (100f + defense.coerceAtLeast(0f))
+        val raw = attack * mitigation
+        return (if (isCritical) raw * 1.5f else raw).coerceAtLeast(10f)
     }
 
     private fun triggerScreenShake(intensity: Float) {
         screenShakeIntensity = intensity.coerceAtLeast(screenShakeIntensity)
     }
 
-    private fun findNearestEnemy(from: Vector2, maxRadius: Float): EnemyEntity? {
-        return enemies.filter { it.isAlive() && from.distanceTo(it.pos) <= maxRadius }
-            .minByOrNull { from.distanceTo(it.pos) }
+    private fun spawnProjectile(x: Float, y: Float, vx: Float, vy: Float, rad: Float, clr: Long, dmg: Float, isPlayer: Boolean, pierce: Boolean = false) {
+        for (p in projectiles) {
+            if (!p.active) {
+                p.spawn(x, y, vx, vy, rad, clr, dmg, isPlayer, pierce = pierce)
+                return
+            }
+        }
     }
 
-    private fun clampPosition(pos: Vector2, radius: Float) {
-        pos.x = pos.x.coerceIn(minX + radius, maxX - radius)
-        pos.y = pos.y.coerceIn(minY + radius, maxY - radius)
+    private fun spawnParticle(x: Float, y: Float, vx: Float, vy: Float, rad: Float, clr: Long, dur: Float, slash: Boolean = false) {
+        for (pt in particles) {
+            if (!pt.active) {
+                pt.init(x, y, vx, vy, rad, clr, dur, slash)
+                return
+            }
+        }
     }
 
-    private fun resolveObstacleCollision(pos: Vector2, radius: Float) {
-        arenaDef.obstacles.forEach { obs ->
-            val dist = pos.distanceTo(Vector2(obs.x, obs.y))
-            val minDist = radius + obs.radius
-            if (dist < minDist && dist > 0.001f) {
-                val pushDir = (pos - Vector2(obs.x, obs.y)).normalize()
-                val overlap = minDist - dist
-                pos.x += pushDir.x * overlap
-                pos.y += pushDir.y * overlap
+    private fun spawnSlashEffect(x: Float, y: Float, clr: Long) {
+        for (i in 0 until 4) {
+            val ang = (i * 0.4f - 0.6f)
+            val spd = 120f
+            spawnParticle(x, y, cos(ang) * spd, sin(ang) * spd, 4f, clr, 0.16f, slash = true)
+        }
+    }
+
+    private fun spawnBurstParticles(x: Float, y: Float, clr: Long, count: Int) {
+        val c = count.coerceAtMost(16)
+        for (i in 0 until c) {
+            val ang = (i * 2f * PI.toFloat()) / c
+            val spd = Random.nextFloat() * 120f + 60f
+            spawnParticle(x, y, cos(ang) * spd, sin(ang) * spd, 4f, clr, 0.28f)
+        }
+    }
+
+    private fun spawnDamageNumber(t: String, x: Float, y: Float, clr: Long, isCrit: Boolean = false) {
+        for (d in damageNumbers) {
+            if (!d.active) {
+                d.init(t, x, y, clr, isCrit)
+                return
+            }
+        }
+    }
+
+    private fun spawnCoin(x: Float, y: Float, value: Int) {
+        for (c in coins) {
+            if (!c.active) {
+                c.spawn(x, y, value)
+                return
             }
         }
     }

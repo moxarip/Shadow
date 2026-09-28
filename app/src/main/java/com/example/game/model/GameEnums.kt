@@ -1,60 +1,60 @@
 package com.example.game.model
 
-enum class HeroId(val displayName: String) {
-    BLAZE("Blaze"),
-    FROST("Frost"),
-    SHADOW("Shadow"),
-    TITAN("Titan"),
-    VOLT("Volt"),
-    NATURE("Nature"),
-    PHANTOM("Phantom"),
-    VENOM("Venom"),
-    SOLAR("Solar"),
-    DRAGON("Dragon")
-}
-
-enum class ElementType(val label: String, val hexColor: Long) {
-    FIRE("Fire", 0xFFFF5722),
-    ICE("Ice", 0xFF00E5FF),
-    SHADOW("Shadow", 0xFF9C27B0),
-    EARTH("Earth", 0xFFFFB300),
-    LIGHTNING("Lightning", 0xFFFFEA00),
-    NATURE("Nature", 0xFF00E676),
-    VOID("Ghost", 0xFF7C4DFF),
-    POISON("Poison", 0xFF76FF03),
-    LIGHT("Light", 0xFFFFD700),
-    DRAGON_FIRE("Legendary", 0xFFFF1744)
-}
-
-enum class EnemyType(val displayName: String, val isBoss: Boolean = false) {
-    BASIC("Shadow Crawler"),
-    FAST("Void Stalker"),
-    TANK("Iron Golem"),
-    RANGED("Dark Cultist"),
-    ELITE("Shadow Knight"),
-    BOSS_BEHEMOTH("Forest Behemoth", isBoss = true),
-    BOSS_PHARAOH("Sunken Pharaoh", isBoss = true),
-    BOSS_CYBER("Cyber Overlord", isBoss = true)
-}
-
-enum class ArenaId(val displayName: String, val subtitle: String) {
-    DARK_FOREST("Dark Forest", "Shadow Realm - Wave 1-5"),
-    ANCIENT_TEMPLE("Ancient Temple", "Forgotten Sands - Wave 1-5"),
-    CYBER_ARENA("Cyber Arena", "Neon Overdrive - Wave 1-5")
-}
-
-enum class GameMode(val title: String, val desc: String) {
-    STORY("Story Battle", "Fight 5 escalating waves ending in an epic arena Boss!"),
-    ENDLESS("Endless Survival", "Survive as long as possible against relentless waves!"),
-    TRAINING("Training Grounds", "Test heroes, hone combos & gauge ability damage freely.")
-}
-
 enum class AppScreen {
     MAIN_MENU,
     BATTLE,
-    HEROES,
+    CHARACTERS,
+    WEAPONS,
+    SKINS,
     SHOP,
     MISSIONS,
     REWARDS,
-    ACHIEVEMENTS
+    ACHIEVEMENTS;
+
+    companion object {
+        val HEROES = CHARACTERS
+    }
+}
+
+enum class GraphicsQuality(val label: String) {
+    LOW("Low (Best Performance)"),
+    MEDIUM("Medium (Balanced)"),
+    HIGH("High (Full Effects)")
+}
+
+enum class AnimState {
+    IDLE,
+    WALK,
+    RUN,
+    JUMP,
+    FALL,
+    ATTACK_LIGHT,
+    ATTACK_HEAVY,
+    COMBO,
+    DASH,
+    ABILITY,
+    HIT,
+    KNOCKBACK,
+    DEATH,
+    VICTORY
+}
+
+enum class EnemyType(val displayName: String, val baseHp: Float, val speed: Float, val color: Long) {
+    BASIC_FIGHTER("Shadow Grunt", 90f, 130f, 0xFF78909C),
+    FAST_FIGHTER("Shadow Stalker", 70f, 210f, 0xFFE040FB),
+    HEAVY_FIGHTER("Shadow Brute", 210f, 95f, 0xFFFF6D00),
+    RANGED_FIGHTER("Shadow Sniper", 80f, 110f, 0xFF76FF03),
+    SHIELD_FIGHTER("Shadow Sentinel", 160f, 105f, 0xFF00E5FF),
+    FLYING_DRONE("Cyber Drone", 60f, 160f, 0xFFFFD600),
+    ELITE_FIGHTER("Shadow Captain", 320f, 150f, 0xFFFF1744),
+    BOSS("World Sovereign", 2400f, 110f, 0xFFFF1744)
+}
+
+enum class AIBehaviorState {
+    IDLE,
+    DETECT,
+    FOLLOW,
+    ATTACK,
+    RETREAT,
+    DEATH
 }

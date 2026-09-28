@@ -2,7 +2,6 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,13 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.MonetizationOn
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -52,10 +49,11 @@ import androidx.compose.ui.window.Dialog
 import com.example.audio.GameAudioManager
 import com.example.data.GameRepository
 import com.example.game.engine.GameEngine
-import com.example.game.model.ArenaRegistry
-import com.example.game.model.GameMode
-import com.example.game.model.HeroRegistry
+import com.example.game.model.CharacterProgress
+import com.example.game.model.CharacterRegistry
 import com.example.game.model.Vector2
+import com.example.game.model.WeaponRegistry
+import com.example.game.model.WorldRegistry
 import com.example.ui.components.ArenaCanvas
 import com.example.ui.components.CombatControls
 import com.example.ui.components.CombatHUD
@@ -68,16 +66,22 @@ fun BattleScreen(
     onExitBattle: () -> Unit
 ) {
     val progression = repository.progression.value
-    val heroDef = HeroRegistry.getDef(progression.selectedHeroId)
-    val heroProgress = progression.heroes[progression.selectedHeroId] ?: com.example.game.model.HeroProgress(progression.selectedHeroId)
-    val arenaDef = ArenaRegistry.getDef(progression.selectedArenaId)
+    val characterDef = CharacterRegistry.getDef(progression.selectedCharacterId)
+    val characterProgress = progression.characters[progression.selectedCharacterId]
+        ?: CharacterProgress(progression.selectedCharacterId, 1, true)
+    val weaponDef = WeaponRegistry.getDef(progression.selectedWeaponType)
+    val worldDef = WorldRegistry.getDef(progression.selectedWorldId)
+    val stageNumber = progression.selectedStageNumber
 
-    val engine = remember {
+    var restartKey by remember { mutableStateOf(0) }
+
+    val engine = remember(restartKey, progression.selectedCharacterId, progression.selectedWeaponType, progression.selectedWorldId, stageNumber) {
         GameEngine(
-            heroDef = heroDef,
-            heroProgress = heroProgress,
-            arenaDef = arenaDef,
-            gameMode = progression.selectedGameMode,
+            characterDef = characterDef,
+            characterProgress = characterProgress,
+            weaponDef = weaponDef,
+            worldDef = worldDef,
+            stageNumber = stageNumber,
             audioManager = audioManager
         )
     }
@@ -87,14 +91,13 @@ fun BattleScreen(
     var showPauseDialog by remember { mutableStateOf(false) }
     var battleRewardsReported by remember { mutableStateOf(false) }
 
-    // Recomposition tick trigger
     var frameTick by remember { mutableFloatStateOf(0f) }
 
     BackHandler {
         showPauseDialog = true
     }
 
-    // High performance 60FPS Game Loop
+    // 60FPS Game Loop
     LaunchedEffect(engine) {
         var lastTime = System.nanoTime()
         while (true) {
@@ -103,21 +106,19 @@ fun BattleScreen(
                 lastTime = now
 
                 if (!engine.isPaused) {
-                    engine.update(dt, joystickInput, isAttackHeld)
+                    engine.update(dt, moveX = joystickInput.x, jumpPressed = false, attackHeld = isAttackHeld)
                 }
                 frameTick = dt
 
-                // Check victory or defeat once to report rewards
+                // Award rewards on victory or loss once
                 if ((engine.isVictory || engine.isGameOver) && !battleRewardsReported) {
                     battleRewardsReported = true
                     repository.addRewards(
-                        earnedCoins = engine.runCoinsEarned,
-                        earnedXp = engine.runXpEarned,
-                        enemiesDefeated = engine.runEnemiesDefeated,
-                        isVictory = engine.isVictory,
-                        isBossDefeated = engine.isVictory && engine.gameMode == GameMode.STORY,
-                        abilitiesUsed = engine.runAbilitiesUsed,
-                        endlessWave = engine.currentWave
+                        earnedCoins = engine.coinsCollected,
+                        earnedXp = engine.xpEarned,
+                        enemiesDefeated = engine.enemiesKilled,
+                        isStageVictory = engine.isVictory,
+                        isBossDefeated = engine.bossDefeated
                     )
                 }
             }
@@ -127,16 +128,17 @@ fun BattleScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF090810))
+            .background(Color(0xFF06050C))
             .testTag("battle_screen")
     ) {
-        // Real-time Gameplay Canvas
+        // 1. Real-time Side-scrolling Canvas
         ArenaCanvas(
             engine = engine,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            onTouchMove = { vec -> joystickInput = vec }
         )
 
-        // Top Status HUD
+        // 2. Top In-Game Status HUD
         CombatHUD(
             engine = engine,
             onPauseClick = {
@@ -145,10 +147,10 @@ fun BattleScreen(
             },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 28.dp)
+                .padding(top = 26.dp)
         )
 
-        // Bottom Controls Layer
+        // 3. Bottom Controls Layer
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -161,17 +163,18 @@ fun BattleScreen(
                 onMove = { vec -> joystickInput = vec }
             )
 
-            // Combat Buttons on the bottom right
+            // Combat Buttons on the bottom right (ATTACK, JUMP, DASH, ABILITY)
             CombatControls(
                 modifier = Modifier.align(Alignment.BottomEnd),
-                heroDef = heroDef,
+                characterDef = characterDef,
                 dashCooldownRemaining = engine.player.dashCooldownTimer,
                 dashCooldownMax = engine.player.dashCooldownMax,
                 abilityCooldownRemaining = engine.player.abilityCooldownTimer,
-                abilityCooldownMax = engine.player.abilityCooldownMax,
+                abilityCooldownMax = characterDef.abilityCooldownSec,
                 onAttackPress = { pressed -> isAttackHeld = pressed },
-                onDashClick = { engine.requestDash() },
-                onAbilityClick = { engine.requestSpecialAbility() }
+                onJumpClick = { engine.requestJump() },
+                onDashClick = { engine.requestPlayerDash() },
+                onAbilityClick = { engine.requestPlayerAbility() }
             )
         }
 
@@ -184,14 +187,14 @@ fun BattleScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(0.9f),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B182B))
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF18152B))
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "BATTLE PAUSED",
+                            text = "GAME PAUSED",
                             color = Color(0xFFFFD54F),
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Black
@@ -210,7 +213,7 @@ fun BattleScreen(
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Resume Battle", fontWeight = FontWeight.Bold)
+                            Text("Resume", fontWeight = FontWeight.Bold)
                         }
                         Spacer(modifier = Modifier.height(10.dp))
                         OutlinedButton(
@@ -226,7 +229,7 @@ fun BattleScreen(
                         ) {
                             Icon(Icons.Default.Close, contentDescription = null)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Abandon Battle", fontWeight = FontWeight.Bold)
+                            Text("Abandon Stage", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -239,7 +242,7 @@ fun BattleScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(0.92f),
                     shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF16152B))
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141228))
                 ) {
                     Column(
                         modifier = Modifier
@@ -263,13 +266,13 @@ fun BattleScreen(
                         }
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = "VICTORY ACHIEVED!",
+                            text = if (engine.stageNumber == 4) "BOSS SLAIN!" else "STAGE CLEARED!",
                             color = Color(0xFFFFD54F),
-                            fontSize = 22.sp,
+                            fontSize = 24.sp,
                             fontWeight = FontWeight.Black
                         )
                         Text(
-                            text = "${arenaDef.name} Conquered",
+                            text = "${worldDef.name} • Stage $stageNumber",
                             color = Color(0xFFB0BEC5),
                             fontSize = 13.sp
                         )
@@ -280,18 +283,18 @@ fun BattleScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(14.dp))
-                                .background(Color(0xFF0F0E1E))
+                                .background(Color(0xFF0C0A1A))
                                 .padding(14.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Gold Collected", color = Color(0xFFB0BEC5), fontSize = 13.sp)
+                                Text("Coins Harvested", color = Color(0xFFB0BEC5), fontSize = 13.sp)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.MonetizationOn, contentDescription = null, tint = Color(0xFFFFD54F), modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("+${engine.runCoinsEarned}", color = Color(0xFFFFE082), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text("+${engine.coinsCollected}", color = Color(0xFFFFE082), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 }
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -299,37 +302,50 @@ fun BattleScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("XP Earned", color = Color(0xFFB0BEC5), fontSize = 13.sp)
-                                Text("+${engine.runXpEarned} XP", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("XP Gained", color = Color(0xFFB0BEC5), fontSize = 13.sp)
+                                Text("+${engine.xpEarned} XP", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Enemies Slayed", color = Color(0xFFB0BEC5), fontSize = 13.sp)
-                                Text("${engine.runEnemiesDefeated}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Time Elapsed", color = Color(0xFFB0BEC5), fontSize = 13.sp)
-                                Text("${engine.runTimeSeconds.toInt()}s", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Enemies Defeated", color = Color(0xFFB0BEC5), fontSize = 13.sp)
+                                Text("${engine.enemiesKilled}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                         }
 
                         Spacer(modifier = Modifier.height(20.dp))
-                        Button(
-                            onClick = onExitBattle,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("victory_continue_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("CLAIM & CONTINUE", color = Color(0xFF0A2B14), fontWeight = FontWeight.Black, fontSize = 15.sp)
+                            if (stageNumber < 4) {
+                                Button(
+                                    onClick = {
+                                        repository.selectWorldAndStage(worldDef.id, stageNumber + 1)
+                                        battleRewardsReported = false
+                                        restartKey++
+                                    },
+                                    modifier = Modifier
+                                        .weight(1.2f)
+                                        .height(48.dp)
+                                        .testTag("victory_next_stage_button"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))
+                                ) {
+                                    Text("NEXT STAGE", color = Color(0xFF0A2B14), fontWeight = FontWeight.Black, fontSize = 13.sp)
+                                }
+                            }
+                            Button(
+                                onClick = onExitBattle,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("victory_continue_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
+                            ) {
+                                Text("MENU", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
                         }
                     }
                 }
@@ -342,7 +358,7 @@ fun BattleScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(0.92f),
                     shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF20111A))
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF22111A))
                 ) {
                     Column(
                         modifier = Modifier
@@ -353,13 +369,13 @@ fun BattleScreen(
                         Text(
                             text = "FALLEN IN BATTLE",
                             color = Color(0xFFFF5252),
-                            fontSize = 22.sp,
+                            fontSize = 24.sp,
                             fontWeight = FontWeight.Black
                         )
                         Text(
-                            text = "Wave ${engine.currentWave} - Keep fighting to grow stronger!",
+                            text = "${worldDef.name} • Stage $stageNumber",
                             color = Color(0xFFB0BEC5),
-                            fontSize = 12.sp
+                            fontSize = 13.sp
                         )
                         Spacer(modifier = Modifier.height(16.dp))
 
@@ -367,15 +383,15 @@ fun BattleScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(14.dp))
-                                .background(Color(0xFF130910))
+                                .background(Color(0xFF14080F))
                                 .padding(14.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Gold Salvaged", color = Color(0xFFB0BEC5), fontSize = 13.sp)
-                                Text("+${engine.runCoinsEarned}", color = Color(0xFFFFE082), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Coins Salvaged", color = Color(0xFFB0BEC5), fontSize = 13.sp)
+                                Text("+${engine.coinsCollected}", color = Color(0xFFFFE082), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Row(
@@ -383,20 +399,39 @@ fun BattleScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("XP Retained", color = Color(0xFFB0BEC5), fontSize = 13.sp)
-                                Text("+${engine.runXpEarned} XP", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("+${engine.xpEarned} XP", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                         }
 
                         Spacer(modifier = Modifier.height(20.dp))
-                        Button(
-                            onClick = onExitBattle,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("defeat_return_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("RETURN TO MENU", color = Color.White, fontWeight = FontWeight.Black, fontSize = 15.sp)
+                            OutlinedButton(
+                                onClick = {
+                                    battleRewardsReported = false
+                                    restartKey++
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Retry", fontSize = 13.sp)
+                            }
+                            Button(
+                                onClick = onExitBattle,
+                                modifier = Modifier
+                                    .weight(1.2f)
+                                    .height(48.dp)
+                                    .testTag("defeat_return_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
+                            ) {
+                                Text("MAIN MENU", color = Color.White, fontWeight = FontWeight.Black, fontSize = 13.sp)
+                            }
                         }
                     }
                 }

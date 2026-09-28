@@ -199,7 +199,11 @@ fun DailyRewardsScreen(
                         isLocked = isLocked,
                         canClaim = isToday && canClaimDaily,
                         onClaim = {
-                            val success = repository.claimDailyReward()
+                            val success = repository.claimDailyReward(
+                                rewardItem.dayNumber,
+                                rewardItem.coinReward,
+                                rewardItem.gemReward
+                            )
                             if (success) {
                                 audioManager.playSound(GameAudioManager.SoundType.LEVEL_UP)
                                 audioManager.vibrate(50, 220)

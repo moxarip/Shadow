@@ -1,6 +1,5 @@
 package com.example.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,8 +12,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Diamond
-import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SportsKabaddi
 import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material3.Icon
@@ -48,6 +47,7 @@ import com.example.ui.screens.MainMenuScreen
 import com.example.ui.screens.MissionsScreen
 import com.example.ui.screens.SettingsDialog
 import com.example.ui.screens.ShopScreen
+import com.example.ui.screens.WeaponsScreen
 
 data class NavItem(
     val screen: AppScreen,
@@ -70,12 +70,12 @@ fun MainGameApp() {
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     val navItems = listOf(
-        NavItem(AppScreen.MAIN_MENU, "Battle", Icons.Default.SportsKabaddi),
-        NavItem(AppScreen.HEROES, "Heroes", Icons.Default.People),
+        NavItem(AppScreen.MAIN_MENU, "Play", Icons.Default.SportsKabaddi),
+        NavItem(AppScreen.CHARACTERS, "Warriors", Icons.Default.People),
+        NavItem(AppScreen.WEAPONS, "Armory", Icons.Default.Shield),
         NavItem(AppScreen.SHOP, "Shop", Icons.Default.Diamond),
-        NavItem(AppScreen.MISSIONS, "Quests", Icons.Default.TrackChanges),
-        NavItem(AppScreen.REWARDS, "Rewards", Icons.Default.CardGiftcard),
-        NavItem(AppScreen.ACHIEVEMENTS, "Trophies", Icons.Default.EmojiEvents)
+        NavItem(AppScreen.MISSIONS, "Missions", Icons.Default.TrackChanges),
+        NavItem(AppScreen.REWARDS, "Rewards", Icons.Default.CardGiftcard)
     )
 
     Scaffold(
@@ -140,7 +140,8 @@ fun MainGameApp() {
                         repository = repository,
                         audioManager = audioManager,
                         onStartBattle = { currentScreen = AppScreen.BATTLE },
-                        onOpenHeroes = { currentScreen = AppScreen.HEROES },
+                        onOpenHeroes = { currentScreen = AppScreen.CHARACTERS },
+                        onOpenWeapons = { currentScreen = AppScreen.WEAPONS },
                         onOpenShop = { currentScreen = AppScreen.SHOP },
                         onOpenSettings = { showSettingsDialog = true }
                     )
@@ -152,12 +153,19 @@ fun MainGameApp() {
                         onExitBattle = { currentScreen = AppScreen.MAIN_MENU }
                     )
                 }
-                AppScreen.HEROES -> {
+                AppScreen.CHARACTERS, AppScreen.SKINS -> {
                     HeroSelectScreen(
                         repository = repository,
                         audioManager = audioManager,
                         onBack = { currentScreen = AppScreen.MAIN_MENU },
                         onOpenShop = { currentScreen = AppScreen.SHOP }
+                    )
+                }
+                AppScreen.WEAPONS -> {
+                    WeaponsScreen(
+                        repository = repository,
+                        audioManager = audioManager,
+                        onBack = { currentScreen = AppScreen.MAIN_MENU }
                     )
                 }
                 AppScreen.SHOP -> {

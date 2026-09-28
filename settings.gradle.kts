@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Shadow Clash"
+rootProject.name = "Shadow Warriors"
 
 include(":app")

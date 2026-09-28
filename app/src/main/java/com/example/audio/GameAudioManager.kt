@@ -44,7 +44,9 @@ class GameAudioManager(private val context: Context) {
     enum class SoundType {
         CLICK,
         ATTACK,
+        HEAVY_ATTACK,
         HIT,
+        JUMP,
         DASH,
         ABILITY_FIRE,
         ABILITY_ICE,
@@ -54,7 +56,10 @@ class GameAudioManager(private val context: Context) {
         VICTORY,
         DEFEAT,
         LEVEL_UP,
-        WARNING
+        WARNING,
+        ENEMY_DEATH,
+        BOSS_ATTACK,
+        WEAPON
     }
 
     fun playSound(type: SoundType) {
@@ -114,7 +119,9 @@ class GameAudioManager(private val context: Context) {
         return when (type) {
             SoundType.CLICK -> generateToneSweep(startFreq = 880.0, endFreq = 1200.0, durationSec = 0.04f, decay = true)
             SoundType.ATTACK -> generateBladeWhoosh()
+            SoundType.HEAVY_ATTACK -> generateToneSweep(startFreq = 480.0, endFreq = 180.0, durationSec = 0.18f, decay = true)
             SoundType.HIT -> generatePunchThud()
+            SoundType.JUMP -> generateToneSweep(startFreq = 260.0, endFreq = 620.0, durationSec = 0.12f, decay = true)
             SoundType.DASH -> generateToneSweep(startFreq = 400.0, endFreq = 950.0, durationSec = 0.12f, decay = true)
             SoundType.ABILITY_FIRE -> generateExplosionTone()
             SoundType.ABILITY_ICE -> generateChime(listOf(1046.5, 1318.5, 1567.98), 0.25f)
@@ -125,6 +132,9 @@ class GameAudioManager(private val context: Context) {
             SoundType.DEFEAT -> generateToneSweep(startFreq = 380.0, endFreq = 110.0, durationSec = 0.45f, decay = true)
             SoundType.LEVEL_UP -> generateArpeggio(listOf(440.0, 554.37, 659.25, 880.0), 0.4f)
             SoundType.WARNING -> generateToneSweep(startFreq = 300.0, endFreq = 220.0, durationSec = 0.15f, decay = false)
+            SoundType.ENEMY_DEATH -> generateToneSweep(startFreq = 320.0, endFreq = 90.0, durationSec = 0.16f, decay = true)
+            SoundType.BOSS_ATTACK -> generateToneSweep(startFreq = 180.0, endFreq = 80.0, durationSec = 0.3f, decay = true)
+            SoundType.WEAPON -> generateToneSweep(startFreq = 540.0, endFreq = 880.0, durationSec = 0.10f, decay = true)
         }
     }
 

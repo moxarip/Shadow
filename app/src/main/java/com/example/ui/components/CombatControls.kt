@@ -5,18 +5,15 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -33,17 +30,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.game.model.HeroDef
+import com.example.game.model.CharacterDef
 
 @Composable
 fun CombatControls(
     modifier: Modifier = Modifier,
-    heroDef: HeroDef,
+    characterDef: CharacterDef,
     dashCooldownRemaining: Float,
     dashCooldownMax: Float,
     abilityCooldownRemaining: Float,
     abilityCooldownMax: Float,
     onAttackPress: (Boolean) -> Unit,
+    onJumpClick: () -> Unit,
     onDashClick: () -> Unit,
     onAbilityClick: () -> Unit
 ) {
@@ -51,27 +49,27 @@ fun CombatControls(
     val dashReady = dashCooldownRemaining <= 0.05f
 
     Box(
-        modifier = modifier.size(190.dp),
+        modifier = modifier.size(210.dp),
         contentAlignment = Alignment.BottomEnd
     ) {
-        // Special Ability Button (Top-Left of cluster)
+        // 1. ABILITY BUTTON (Far upper-left)
         Box(
             modifier = Modifier
-                .offset(x = (-85).dp, y = (-75).dp)
-                .size(56.dp)
+                .offset(x = (-135).dp, y = (-55).dp)
+                .size(52.dp)
                 .clip(CircleShape)
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(heroDef.glowColor),
-                            Color(heroDef.primaryColor).copy(alpha = 0.85f),
-                            Color(0xFF1F1D36)
+                            Color(characterDef.energyColor),
+                            Color(characterDef.energyColor).copy(alpha = 0.7f),
+                            Color(0xFF1B1832)
                         )
                     )
                 )
                 .border(
-                    width = if (abilityReady) 2.5.dp else 1.dp,
-                    color = if (abilityReady) Color(heroDef.glowColor) else Color(0x66FFFFFF),
+                    width = if (abilityReady) 2.dp else 1.dp,
+                    color = if (abilityReady) Color(characterDef.energyColor) else Color(0x66FFFFFF),
                     shape = CircleShape
                 )
                 .testTag("ability_button")
@@ -86,41 +84,40 @@ fun CombatControls(
         ) {
             Icon(
                 imageVector = Icons.Default.AutoAwesome,
-                contentDescription = heroDef.abilityName,
-                tint = if (abilityReady) Color.White else Color(0x88FFFFFF),
-                modifier = Modifier.size(28.dp)
+                contentDescription = characterDef.abilityName,
+                tint = if (abilityReady) Color.White else Color(0x77FFFFFF),
+                modifier = Modifier.size(24.dp)
             )
 
             if (!abilityReady) {
-                // Cooldown overlay & countdown
                 Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .background(Color(0x99000000)),
+                        .background(Color(0xAA000000)),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator(
                         progress = { (abilityCooldownRemaining / abilityCooldownMax).coerceIn(0f, 1f) },
                         modifier = Modifier.matchParentSize(),
-                        color = Color(heroDef.glowColor),
+                        color = Color(characterDef.energyColor),
                         strokeWidth = 3.dp,
-                        trackColor = Color(0x33FFFFFF),
+                        trackColor = Color(0x33FFFFFF)
                     )
                     Text(
                         text = "${abilityCooldownRemaining.toInt() + 1}s",
                         color = Color.White,
-                        fontSize = 13.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
 
-        // Dash Button (Top-Right of cluster)
+        // 2. DASH BUTTON (Upper-left)
         Box(
             modifier = Modifier
-                .offset(x = 0.dp, y = (-90).dp)
-                .size(54.dp)
+                .offset(x = (-75).dp, y = (-105).dp)
+                .size(52.dp)
                 .clip(CircleShape)
                 .background(
                     brush = Brush.radialGradient(
@@ -146,14 +143,14 @@ fun CombatControls(
                 imageVector = Icons.Default.DirectionsRun,
                 contentDescription = "Dash",
                 tint = if (dashReady) Color.White else Color(0x77FFFFFF),
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(26.dp)
             )
 
             if (!dashReady) {
                 Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .background(Color(0x99000000)),
+                        .background(Color(0xAA000000)),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator(
@@ -161,16 +158,45 @@ fun CombatControls(
                         modifier = Modifier.matchParentSize(),
                         color = Color(0xFF00E5FF),
                         strokeWidth = 3.dp,
-                        trackColor = Color(0x33FFFFFF),
+                        trackColor = Color(0x33FFFFFF)
                     )
                 }
             }
         }
 
-        // Main Primary Attack Button (Center large button)
+        // 3. JUMP BUTTON (Upper-right)
         Box(
             modifier = Modifier
-                .size(76.dp)
+                .offset(x = (-10).dp, y = (-115).dp)
+                .size(54.dp)
+                .clip(CircleShape)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFF00E676), Color(0xFF004D40))
+                    )
+                )
+                .border(2.dp, Color(0xFF69F0AE), CircleShape)
+                .testTag("jump_button")
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) {
+                    onJumpClick()
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowUpward,
+                contentDescription = "Jump",
+                tint = Color.White,
+                modifier = Modifier.size(28.dp)
+            )
+        }
+
+        // 4. MAIN ATTACK BUTTON (Bottom-right, large)
+        Box(
+            modifier = Modifier
+                .size(78.dp)
                 .shadow(12.dp, CircleShape)
                 .clip(CircleShape)
                 .background(
@@ -199,7 +225,7 @@ fun CombatControls(
                 imageVector = Icons.Default.FlashOn,
                 contentDescription = "Attack",
                 tint = Color.White,
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(42.dp)
             )
         }
     }
